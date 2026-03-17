@@ -1,15 +1,19 @@
 """
-core/position_manager.py — 심볼당 1포지션 상태 추적 (v2.9)
+core/position_manager.py — 심볼당 1포지션 상태 추적 (v2.10)
 
 수정 히스토리:
-  v2.8: ccxt unified symbol 정규화 (BTC/USDT:USDT → BTC/USDT)
-  v2.9:
-  [FIX1] _position_timeframe in-memory → JSON 파일 영속화
-         Railway 재시작 후에도 TF 정보 유지 (5m 포지션이 24h 기준 적용되는 버그 방지)
-  [FIX2] 포지션 오픈 시간 봇 자체 기록 (entry_time)
-         Binance fetch_positions의 timestamp = updateTime (업데이트 시간, 오픈 시간 아님)
-         → 봇이 직접 기록한 entry_time 사용으로 age 계산 정확도 확보
-  [FIX3] 포지션이 닫히면 state.json에서 자동 정리
+  v2.8 : ccxt unified symbol 정규화 (BTC/USDT:USDT → BTC/USDT)
+  v2.9 : _position_timeframe in-memory → JSON 파일 영속화,
+          봇 자체 entry_time 기록 (Binance updateTime 대신),
+          포지션 닫히면 state.json 자동 정리
+  v2.10:
+  [FIX1] get_open_positions_live(): Binance fetch_positions() 직접 조회 함수 분리
+         → 포지션 크기/진입가/PnL은 항상 Binance 실시간 데이터 사용
+         → entry_time/timeframe만 state.json에서 보완 (Binance가 진입 시각 미제공)
+  [FIX2] get_realtime_position_size(): 강제청산/조회 시 Binance 실시간 크기 단독 조회
+         → close_position_market()에서 size 불일치 방지
+  [FIX3] get_open_algo_orders(): 현재 등록된 Algo Order(TP/SL) 목록 조회
+         → Algo Order 존재 여부 확인, 누락 체크 가능
 """
 
 import json
@@ -89,11 +93,65 @@ def _cleanup_closed_positions(open_symbols: set) -> None:
         logger.info(f"[POSITION] 청산 확인 — state.json 정리: {removed}")
 
 
+# ── [v2.10] Binance 실시간 단독 조회 함수들 ─────────────────
+
+def get_realtime_position_size(symbol: str) -> float:
+    """
+    [v2.10] Binance fetch_positions()로 실시간 포지션 크기만 단독 조회.
+
+    강제청산 등 size가 중요한 순간에 사용.
+    조회 실패 시 0.0 반환 (호출부에서 폴백 처리).
+    """
+    try:
+        positions = exchange.fetch_positions([symbol])
+        for pos in positions:
+            contracts = float(pos.get("contracts", 0) or 0)
+            if contracts > 0:
+                pos_sym = normalize_symbol(pos["symbol"])
+                if pos_sym == normalize_symbol(symbol):
+                    logger.info(
+                        f"[POSITION] 실시간 포지션 크기 조회: {symbol} = {contracts}"
+                    )
+                    return contracts
+        return 0.0
+    except Exception as e:
+        logger.error(f"[POSITION] 실시간 포지션 크기 조회 실패 {symbol}: {e}")
+        return 0.0
+
+
+def get_open_algo_orders(symbol: str) -> list:
+    """
+    [v2.10] 해당 심볼의 현재 등록된 Algo Order(TP/SL) 목록 조회.
+
+    Binance /fapi/v1/openAlgoOrders 직접 조회.
+    TP/SL이 정상 등록되어 있는지 확인할 때 사용.
+    반환: [{algoId, orderType, side, stopPrice, ...}, ...]
+    """
+    raw_symbol = symbol.split(":")[0].replace("/", "")
+    try:
+        resp = exchange.fapiPrivateGetOpenAlgoOrders({"symbol": raw_symbol})
+        orders = resp.get("orders", []) if isinstance(resp, dict) else resp
+        logger.info(f"[POSITION] {symbol} 열린 Algo Order: {len(orders)}개")
+        for o in orders:
+            logger.info(
+                f"  algoId={o.get('algoId')} | type={o.get('orderType')} | "
+                f"stopPrice={o.get('triggerPrice', o.get('stopPrice', '?'))}"
+            )
+        return orders
+    except Exception as e:
+        logger.warning(f"[POSITION] Algo Order 조회 실패 {symbol}: {e}")
+        return []
+
+
 def get_open_positions() -> dict:
     """
-    현재 열린 포지션 조회.
-    반환: {symbol: position_info}
-    예: {"BTC/USDT": {"side": "long", "size": 0.001, "entry": 85000.0, "timeframe": "5m", "entry_time": 1234567890.0}}
+    현재 열린 포지션 조회 (v2.10: Binance 실시간 우선).
+
+    데이터 계층:
+      - 포지션 크기/진입가/PnL → Binance fetch_positions() 실시간 데이터
+      - entry_time/timeframe   → state.json (Binance가 진입 시각 미제공이므로 로컬 유지)
+
+    반환: {symbol: {side, size, entry, unrealized_pnl, entry_time, timeframe, raw_symbol}}
     """
     try:
         positions = exchange.fetch_positions()
@@ -104,21 +162,23 @@ def get_open_positions() -> dict:
             size = float(pos.get("contracts", 0) or 0)
             if size == 0:
                 continue
+
             symbol     = normalize_symbol(pos["symbol"])
             saved      = state.get(symbol, {})
-            # 봇이 기록한 entry_time 우선, 없으면 Binance updateTime 폴백
-            binance_ts = pos.get("timestamp")  # ms 또는 None
+
+            # entry_time: 봇 기록 우선 → Binance updateTime 폴백 → 현재 시각 폴백
+            binance_ts = pos.get("timestamp")   # ms
             entry_time = saved.get("entry_time") or (
                 (binance_ts / 1000) if binance_ts else time.time()
             )
+
             result[symbol] = {
                 "side":           pos.get("side", "long"),
-                "size":           size,
-                "entry":          float(pos.get("entryPrice", 0) or 0),
-                "unrealized_pnl": float(pos.get("unrealizedPnl", 0) or 0),
-                "entry_time":     entry_time,
-                # TF: 봇 기록 우선, 없으면 "1h" 기본 (재시작 후 미기록 케이스)
-                "timeframe":      saved.get("timeframe", "1h"),
+                "size":           size,                                  # ← Binance 실시간
+                "entry":          float(pos.get("entryPrice", 0) or 0),  # ← Binance 실시간
+                "unrealized_pnl": float(pos.get("unrealizedPnl", 0) or 0),  # ← Binance 실시간
+                "entry_time":     entry_time,                            # ← state.json 우선
+                "timeframe":      saved.get("timeframe", "1h"),          # ← state.json 우선
                 "raw_symbol":     pos["symbol"],
             }
 

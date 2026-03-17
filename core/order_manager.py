@@ -1,21 +1,19 @@
 """
-core/order_manager.py — ccxt futures 주문 발행 (v2.13)
+core/order_manager.py — ccxt futures 주문 발행 (v2.14)
 
 버그 수정 히스토리:
-  v2.1  : amount precision, min_qty, set_leverage 재시도
-  v2.10 : positionSide 제거(단방향모드 -4061), 명목가치 자동 보정(-4164)
-  v2.11 : [미배포] closePosition=True 시도 (amount=0 방식) → 실패
-  v2.12 : fapiPrivatePostOrder 직접 호출 시도 → 여전히 -4120
-           (POST /fapi/v1/order 자체가 2025-12-09 이후 조건부 주문 차단됨)
-  v2.13 :
-  [FIX1] -4120 완전 해결: ccxt 4.5.43 + create_order(triggerPrice=...) 방식
-         2025-12-09 바이낸스 변경으로 TAKE_PROFIT_MARKET/STOP_MARKET은
-         반드시 POST /fapi/v1/algoOrder 엔드포인트를 사용해야 함.
-         ccxt 4.5.43에서 triggerPrice/stopLossPrice/takeProfitPrice 파라미터를
-         넘기면 자동으로 fapiPrivatePostAlgoOrder(algoType=CONDITIONAL)로 라우팅됨.
-  [FIX2] TP/SL 실패 시 즉시 긴급 시장가 청산 + 로깅 강화 (무방어 포지션 방지)
-  [FIX3] 부동소수점 보정: round() 처리 유지
-  [REQ]  requirements.txt: ccxt==4.5.43 필수
+  v2.13 : ccxt 4.5.43 + triggerPrice → /fapi/v1/algoOrder 자동 라우팅 (-4120 해결)
+  v2.14 :
+  [FIX1] cancel_all_open_orders(): 일반 주문 + Algo Order 동시 취소
+         기존 cancel_all_orders()는 /fapi/v1/allOpenOrders만 취소 →
+         algoOrder(/fapi/v1/algoOpenOrders)는 잔존 → 포지션 청산 후 TP/SL 좀비 주문 발생
+         → fapiPrivateDeleteAlgoOpenOrders도 함께 호출
+  [FIX2] close_position_market(): size 외부 파라미터 대신 Binance 실시간 포지션 재조회
+         → 포지션 크기 불일치(부분 청산 등) 방지
+  [FIX3] TP/SL 레버리지 검토 → 현재 방식(가격 기준) 유지가 올바름
+         선물 TP/SL은 항상 '가격 이동 %' 기준. 레버리지는 손익 배율에만 영향.
+         단, SL 가격이 강제청산(Liquidation) 가격보다 높은지 안전 체크 추가.
+         liquidation price ≈ entry × (1 - 1/leverage + MMR) 에서 SL이 liq보다 먼저여야 안전.
 """
 
 import math
@@ -39,6 +37,21 @@ MIN_QTY = {
     "ETH/USDT":  0.001,
     "XRP/USDT":  1.0,
 }
+
+# ── 바이낸스 선물 유지증거금률 (Maintenance Margin Rate) ────
+# LONG 포지션 강제청산 가격 ≈ entry × (1 - 1/leverage + MMR)
+# SL이 이 가격보다 위에 있어야 강제청산 전에 SL 발동됨
+BINANCE_MMR = {
+    "BTC/USDT":  0.004,   # 0.4% (소규모 포지션 기준)
+    "ETH/USDT":  0.005,   # 0.5%
+    "XRP/USDT":  0.005,   # 0.5%
+}
+
+
+# ── 심볼 변환 ────────────────────────────────────────────────
+def _to_raw_symbol(symbol: str) -> str:
+    """'BTC/USDT' → 'BTCUSDT'"""
+    return symbol.split(":")[0].replace("/", "")
 
 
 def _round_amount(symbol: str, amount: float) -> float:
@@ -70,6 +83,47 @@ def _ensure_min_notional(symbol: str, amount: float, entry: float) -> float:
     return amount
 
 
+def _check_sl_above_liquidation(
+    symbol: str,
+    entry: float,
+    sl: float,
+    leverage: int,
+) -> None:
+    """
+    [v2.14] SL이 강제청산 가격보다 위에 있는지 검증.
+
+    LONG 강제청산(Liquidation) 근사 가격:
+        liq ≈ entry × (1 - 1/leverage + MMR)
+
+    SL < liq 이면: 가격이 SL에 도달하기 전에 강제청산됨 → 위험!
+    이 경우 경고 로그 출력 (주문 자체는 막지 않음, 전략 파라미터 문제이므로)
+
+    레버리지와 TP/SL의 관계 정리:
+        - TP/SL 가격은 항상 진입가 기준 '가격 이동 %'로 설정 (레버리지 무관)
+        - 레버리지는 손익 배율(자본금 대비 수익률)에만 영향
+        - 예: 10x 레버리지 + SL -0.5% → 자본금 -5% 손실 (적절한 리스크)
+        - 단, SL이 강제청산 가격보다 낮으면 SL이 발동 안 됨 → 이 함수로 체크
+    """
+    mmr     = BINANCE_MMR.get(symbol, 0.005)
+    liq_est = entry * (1 - 1 / leverage + mmr)
+
+    sl_pct  = (sl - entry) / entry * 100   # 음수
+    liq_pct = (liq_est - entry) / entry * 100   # 음수
+
+    if sl < liq_est:
+        logger.warning(
+            f"[ORDER] ⚠️ SL 강제청산 우선 위험! {symbol} | "
+            f"SL={sl:.4f} ({sl_pct:.2f}%) < LiqEst={liq_est:.4f} ({liq_pct:.2f}%) | "
+            f"레버리지={leverage}x → SL 발동 전 강제청산될 수 있음"
+        )
+    else:
+        logger.info(
+            f"[ORDER] ✅ SL/Liq 안전 확인: {symbol} | "
+            f"SL={sl:.4f} ({sl_pct:.2f}%) > LiqEst={liq_est:.4f} ({liq_pct:.2f}%) | "
+            f"레버리지={leverage}x"
+        )
+
+
 def set_leverage(symbol: str, leverage: int) -> bool:
     """레버리지 설정"""
     try:
@@ -88,37 +142,30 @@ def _place_algo_order(
     amount: float,
 ) -> dict:
     """
-    TP/SL 주문을 Binance Algo Order API로 전송 (v2.13 핵심 수정).
+    TP/SL 주문을 Binance Algo Order API로 전송 (v2.13+).
 
     2025-12-09 바이낸스 변경 후 TAKE_PROFIT_MARKET / STOP_MARKET은
-    POST /fapi/v1/order가 아닌 POST /fapi/v1/algoOrder 엔드포인트만 허용.
-    ccxt 4.5.43+에서 triggerPrice 파라미터를 사용하면 자동으로
-    fapiPrivatePostAlgoOrder(algoType=CONDITIONAL)로 라우팅됨.
-
-    Args:
-        symbol:     ccxt unified symbol (e.g. 'BTC/USDT')
-        order_type: 'TAKE_PROFIT_MARKET' | 'STOP_MARKET'
-        stop_price: trigger price (float)
-        amount:     포지션 수량 (closePosition=true 동작을 위해 실제 수량 전달)
+    POST /fapi/v1/algoOrder 엔드포인트만 허용. ccxt 4.5.43+에서
+    triggerPrice 파라미터 사용 시 자동으로 fapiPrivatePostAlgoOrder 라우팅.
     """
     return exchange.create_order(
         symbol=symbol,
         type=order_type,
-        side="sell",           # LONG 청산
+        side="sell",
         amount=amount,
         price=None,
         params={
-            "triggerPrice":  str(round(stop_price, 2)),
-            "workingType":   "MARK_PRICE",
-            "timeInForce":   "GTE_GTC",
-            "reduceOnly":    True,
+            "triggerPrice": str(round(stop_price, 2)),
+            "workingType":  "MARK_PRICE",
+            "timeInForce":  "GTE_GTC",
+            "reduceOnly":   True,
         },
     )
 
 
 def _emergency_close(symbol: str, amount: float) -> None:
     """
-    TP/SL 등록 실패 시 긴급 시장가 청산 (v2.12+).
+    TP/SL 등록 실패 시 긴급 시장가 청산.
     무방어 포지션 방지용 안전장치.
     """
     try:
@@ -144,12 +191,11 @@ def execute_order(sig: dict) -> bool:
 
     1. 레버리지 설정
     2. 수량 계산 (precision + min_qty + min_notional 체크)
-    3. MARKET 진입 주문
-    4. TAKE_PROFIT_MARKET (ccxt → /fapi/v1/algoOrder, algoType=CONDITIONAL)
-    5. STOP_MARKET        (ccxt → /fapi/v1/algoOrder, algoType=CONDITIONAL)
+    3. SL/강제청산 가격 안전 체크 (v2.14)
+    4. MARKET 진입 주문
+    5. TAKE_PROFIT_MARKET (→ /fapi/v1/algoOrder)
+    6. STOP_MARKET        (→ /fapi/v1/algoOrder)
     * TP/SL 실패 시 → 즉시 긴급 청산 후 False 반환
-
-    반환: 성공 True / 실패 False
     """
     strategy    = sig["strategy"]
     symbol      = strategy["symbol"]
@@ -160,8 +206,8 @@ def execute_order(sig: dict) -> bool:
     sl          = sig["sl"]
     entry       = sig["entry_price"]
 
-    entry_order_id = None   # 진입 성공 여부 추적
-    amount         = 0.0    # 긴급 청산에서 참조 가능하도록 초기화
+    entry_order_id = None
+    amount         = 0.0
 
     try:
         # 1. 레버리지 설정
@@ -172,7 +218,6 @@ def execute_order(sig: dict) -> bool:
         notional = margin * leverage
         amount   = _round_amount(symbol, notional / entry)
 
-        # 최소 수량 체크
         min_qty = MIN_QTY.get(symbol, 0.001)
         if amount < min_qty:
             logger.warning(
@@ -181,16 +226,20 @@ def execute_order(sig: dict) -> bool:
             )
             return False
 
-        # 명목가치 MIN_NOTIONAL 미달 시 한 단계 올림
         amount = _ensure_min_notional(symbol, amount, entry)
+
+        # 3. [v2.14] SL / 강제청산 가격 안전 체크
+        _check_sl_above_liquidation(symbol, entry, sl, leverage)
 
         logger.info(
             f"[ORDER] 진입 시도 | {strategy_id} | {symbol} LONG | "
             f"수량: {amount} | 마진: ${margin:.2f} | {leverage}x | "
-            f"TP: {tp:.4f} | SL: {sl:.4f}"
+            f"TP: {tp:.4f} (+{(tp/entry-1)*100:.2f}%) | "
+            f"SL: {sl:.4f} ({(sl/entry-1)*100:.2f}%) | "
+            f"자본기준 TP: +{(tp/entry-1)*100*leverage:.1f}% / SL: {(sl/entry-1)*100*leverage:.1f}%"
         )
 
-        # 3. MARKET 진입 주문 (단방향 모드 — positionSide 없음)
+        # 4. MARKET 진입 주문
         entry_order = exchange.create_order(
             symbol=symbol,
             type="MARKET",
@@ -200,22 +249,21 @@ def execute_order(sig: dict) -> bool:
         entry_order_id = entry_order.get("id", "N/A")
         logger.info(f"[ORDER] 진입 주문 체결: {entry_order_id}")
 
-        # 4. TAKE_PROFIT_MARKET — Algo Order API (v2.13, ccxt 4.5.43+)
-        #    triggerPrice 파라미터 → 자동으로 /fapi/v1/algoOrder 라우팅
+        # 5. TAKE_PROFIT_MARKET — Algo Order API (v2.13+)
         try:
             tp_resp = _place_algo_order(symbol, "TAKE_PROFIT_MARKET", tp, amount)
             tp_id   = tp_resp.get("id", tp_resp.get("algoId", "N/A"))
-            logger.info(f"[ORDER] TP 주문 등록 (algoOrder): {tp_id} @ {tp:.4f}")
+            logger.info(f"[ORDER] TP algoOrder 등록: {tp_id} @ {tp:.4f}")
         except Exception as e:
             logger.error(f"[ORDER] TP 등록 실패 → 긴급 청산 실행: {e}")
             _emergency_close(symbol, amount)
             return False
 
-        # 5. STOP_MARKET — Algo Order API (v2.13, ccxt 4.5.43+)
+        # 6. STOP_MARKET — Algo Order API (v2.13+)
         try:
             sl_resp = _place_algo_order(symbol, "STOP_MARKET", sl, amount)
             sl_id   = sl_resp.get("id", sl_resp.get("algoId", "N/A"))
-            logger.info(f"[ORDER] SL 주문 등록 (algoOrder): {sl_id} @ {sl:.4f}")
+            logger.info(f"[ORDER] SL algoOrder 등록: {sl_id} @ {sl:.4f}")
         except Exception as e:
             logger.error(f"[ORDER] SL 등록 실패 → 긴급 청산 실행: {e}")
             _emergency_close(symbol, amount)
@@ -246,20 +294,66 @@ def execute_order(sig: dict) -> bool:
 
 
 def cancel_all_open_orders(symbol: str) -> None:
-    """해당 심볼 미체결 주문 전부 취소 (Circuit Breaker 발동 시)"""
+    """
+    해당 심볼 미체결 주문 전부 취소 (v2.14: 일반 주문 + Algo Order 동시).
+
+    2025-12-09 이후 TP/SL이 Algo Order로 전환됨.
+    기존 cancel_all_orders()는 /fapi/v1/allOpenOrders만 취소하므로
+    Algo Order(/fapi/v1/algoOpenOrders)는 잔존 → 좀비 주문 발생 가능.
+    → 일반 주문 취소 + fapiPrivateDeleteAlgoOpenOrders 모두 호출.
+    """
+    raw = _to_raw_symbol(symbol)
+
+    # ① 일반 미체결 주문 취소
     try:
         exchange.cancel_all_orders(symbol)
-        logger.info(f"[ORDER] {symbol} 미체결 주문 전부 취소")
+        logger.info(f"[ORDER] {symbol} 일반 미체결 주문 전부 취소")
     except Exception as e:
-        logger.error(f"[ORDER] 주문 취소 실패 {symbol}: {e}")
+        logger.error(f"[ORDER] 일반 주문 취소 실패 {symbol}: {e}")
+
+    # ② Algo Order 취소 (TP/SL은 algoOpenOrders에 있음)
+    try:
+        exchange.fapiPrivateDeleteAlgoOpenOrders({"symbol": raw})
+        logger.info(f"[ORDER] {symbol} Algo 미체결 주문 전부 취소 (TP/SL)")
+    except Exception as e:
+        # 열린 algoOrder가 없으면 에러가 날 수 있음 — 경고 수준으로 처리
+        logger.warning(f"[ORDER] Algo 주문 취소 실패 (없을 수도 있음) {symbol}: {e}")
 
 
-def close_position_market(symbol: str, size: float) -> None:
-    """시장가 강제 청산 (2시간 초과 포지션)"""
+def close_position_market(symbol: str, size: float = 0.0) -> None:
+    """
+    시장가 강제 청산 (v2.14: Binance 실시간 포지션 크기 재조회).
+
+    기존: 외부에서 넘겨받은 size 사용 → 부분 청산, 누락 등으로 불일치 가능
+    변경: Binance fetch_positions()로 실시간 포지션 크기 조회 후 사용
+          조회 실패 또는 포지션 없으면 파라미터 size 폴백 사용
+    """
+    # Binance 실시간 포지션 크기 재조회
+    try:
+        positions = exchange.fetch_positions([symbol])
+        for pos in positions:
+            contracts = float(pos.get("contracts", 0) or 0)
+            if contracts > 0:
+                raw_size = contracts
+                # symbol 정규화 비교
+                pos_sym = pos["symbol"].split(":")[0]
+                if pos_sym == symbol.split(":")[0]:
+                    size = raw_size
+                    logger.info(
+                        f"[ORDER] 강제청산 실시간 수량 확인: {symbol} → {size} "
+                        f"(Binance fetch_positions)"
+                    )
+                    break
+    except Exception as e:
+        logger.warning(
+            f"[ORDER] 강제청산 실시간 조회 실패 — 파라미터 size({size}) 폴백: {e}"
+        )
+
     size = _round_amount(symbol, size)
     if size <= 0:
-        logger.warning(f"[ORDER] {symbol} 청산 수량 0 → 스킵")
+        logger.warning(f"[ORDER] {symbol} 강제청산 수량 0 → 스킵")
         return
+
     try:
         exchange.create_order(
             symbol=symbol,

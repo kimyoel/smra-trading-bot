@@ -1,15 +1,12 @@
 """
-main.py — SMRA Bot 메인 루프 (v2.7)
+main.py — SMRA Bot 메인 루프 (v2.8)
 
 v2.6: 봉 마감 정각 동기화 (wait_for_candle_close)
-v2.7:
-  [수정] 신호 TTL 개념 재정립
-    - 이전: "봉 마감 후 60초 이내에만 진입" → 5분봉 봇에서 의미 없음
-      (어차피 매 봉마다 새 신호 생성하므로 다음 봉에서 재시도가 맞음)
-    - 변경: "같은 루프 내 에러 연쇄로 봉이 넘어갔으면 진입 포기"
-      → 봉 경계 체크: 루프 시작 봉 != 현재 봉이면 나머지 신호 포기
-      → 다음 봉 마감 후 새 신호로 정상 진입
-  [수정] 청산 로직: get_position_age_bars → 파일 기반 entry_time 사용 (v2.9)
+v2.7: 신호 TTL → 봉 경계 체크로 대체, 파일 기반 entry_time (v2.9)
+v2.8:
+  [수정] 강제청산 시 close_position_market() 내부에서 Binance 실시간 size 재조회
+         → pos_info["size"] 의존 제거 (부분청산 등 불일치 방지)
+  [수정] cancel_all_open_orders() → 일반 주문 + Algo Order 동시 취소 (v2.14 연계)
 """
 
 import time
@@ -98,8 +95,8 @@ def run_loop() -> None:
                 "POSITION_TIMEOUT",
                 f"{symbol} {age_h:.1f}h 초과 → {tf} 24봉 기준 강제 청산"
             )
-            cancel_all_open_orders(symbol)
-            close_position_market(symbol, pos_info["size"])
+            cancel_all_open_orders(symbol)          # 일반 + Algo Order 동시 취소
+            close_position_market(symbol)              # v2.8: 내부에서 실시간 size 조회
 
     # ── 5. 신호 생성 ──────────────────────────────────────────
     try:
