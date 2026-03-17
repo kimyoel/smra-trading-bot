@@ -1,6 +1,10 @@
 """
-core/data_manager.py — ccxt OHLCV fetch + 캐시
-같은 심볼+타임프레임은 1루프 내 중복 호출 방지
+core/data_manager.py — ccxt OHLCV fetch + 캐시 (v2.2)
+
+버그 수정:
+  - ccxt.binance(defaultType=future) → ccxt.binanceusdm()
+    Spot 클라이언트가 api.binance.com 호출 → 지역 차단 발생
+    binanceusdm은 fapi.binance.com 직접 호출 → 선물 전용 정상 동작
 """
 
 import os
@@ -11,13 +15,15 @@ from utils.logger import get_logger
 
 logger = get_logger("data_manager")
 
-# ── 거래소 초기화 ────────────────────────────────────────────
-exchange = ccxt.binance({
+# ── 거래소 초기화 (USDT-M Futures 전용) ─────────────────────
+exchange = ccxt.binanceusdm({
     "apiKey":  os.getenv("BINANCE_API_KEY", ""),
     "secret":  os.getenv("BINANCE_API_SECRET", ""),
-    "options": {"defaultType": "future"},
     "enableRateLimit": True,
 })
+
+# ── 주문 실행용 exchange (order_manager에서 import) ───────────
+# binanceusdm은 set_leverage / create_order 모두 지원
 
 # ── 1루프 캐시 ───────────────────────────────────────────────
 _cache: dict = {}   # key: "SYMBOL_TF", value: (timestamp, DataFrame)
@@ -82,10 +88,11 @@ def fetch_orderbook(symbol: str) -> dict | None:
 
 
 def get_balance() -> float:
-    """USDT 사용 가능 잔고 반환"""
+    """USDT 사용 가능 잔고 반환 (선물 지갑 free)"""
     try:
         bal = exchange.fetch_balance()
-        return float(bal["USDT"]["free"])
+        usdt = bal.get("USDT", {})
+        return float(usdt.get("free", 0.0))
     except Exception as e:
         logger.error(f"[DATA] 잔고 조회 실패: {e}")
         return 0.0
