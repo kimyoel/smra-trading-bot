@@ -1,5 +1,5 @@
 """
-strategies/registry.py — 13개 전략 딕셔너리 (v2.1)
+strategies/registry.py — 13개 전략 딕셔너리 (v2.9)
 
 TP/SL 변경:
   이전: tp_sl: "H08"  (코드 문자열)
@@ -149,8 +149,8 @@ STRATEGY_REGISTRY = {
         "indicators": ["PSAR", "WILLR", "CMF"],
         "sharpe":     1.31,
         "win_rate":   0.613,
-        "leverage":   2,
-        "max_leverage": 2,
+        "leverage":   3,
+        "max_leverage": 3,  # v2.9: 2x→3x (명목 $102 > MIN $100, SL -3%로 파산 불가)
         "tp_type":    "fixed",
         "tp_mult":    0.030,    # +3.0%  (H06)
         "sl_mult":    0.030,    # -3.0%
@@ -163,8 +163,8 @@ STRATEGY_REGISTRY = {
         "indicators": ["SMA", "PSAR", "WILLR"],
         "sharpe":     1.07,
         "win_rate":   0.663,
-        "leverage":   2,
-        "max_leverage": 2,
+        "leverage":   3,
+        "max_leverage": 3,  # v2.9: 2x→3x (명목 $102 > MIN $100, SL -3%로 파산 불가)
         "tp_type":    "fixed",
         "tp_mult":    0.030,    # +3.0%  (H06)
         "sl_mult":    0.030,    # -3.0%
@@ -177,8 +177,8 @@ STRATEGY_REGISTRY = {
         "indicators": ["PSAR", "AROON", "WILLR"],
         "sharpe":     1.07,
         "win_rate":   0.725,
-        "leverage":   2,
-        "max_leverage": 2,
+        "leverage":   3,
+        "max_leverage": 3,  # v2.9: 2x→3x (명목 $102 > MIN $100, SL -3%로 파산 불가)
         "tp_type":    "fixed",
         "tp_mult":    0.030,    # +3.0%  (H06)
         "sl_mult":    0.030,    # -3.0%
