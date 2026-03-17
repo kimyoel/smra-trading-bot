@@ -1,11 +1,15 @@
 """
-core/position_manager.py — 심볼당 1포지션 상태 추적 (v2.1)
+core/position_manager.py — 심볼당 1포지션 상태 추적 (v2.8)
 
 수정:
   - get_position_age_bars() 함수 추가 (main.py에서 호출)
     get_position_age_hours()의 alias로 동작 (hours 단위 반환)
   - position_info에 timeframe 필드 추가
     (main.py의 TF_HOURS 매핑에 필요)
+  - v2.8: ccxt unified symbol 정규화 추가
+    fetch_positions 반환 symbol = 'BTC/USDT:USDT'
+    registry symbol = 'BTC/USDT'
+    → normalize_symbol()로 ':USDT' 제거하여 통일
 """
 
 import time
@@ -19,6 +23,18 @@ logger = get_logger("position_manager")
 # get_open_positions()는 바이낸스 API에서 직접 조회하므로
 # TF 정보는 별도로 in-memory 관리 (Railway 재시작 시 1h 기본값 사용)
 _position_timeframe: dict = {}  # {symbol: timeframe}
+
+
+def normalize_symbol(symbol: str) -> str:
+    """
+    ccxt unified symbol 정규화.
+    'BTC/USDT:USDT' → 'BTC/USDT'
+    'ETH/USDT:USDT' → 'ETH/USDT'
+    'BTC/USDT' → 'BTC/USDT' (변환 없음)
+    """
+    if ':' in symbol:
+        return symbol.split(':')[0]
+    return symbol
 
 
 def record_position_timeframe(symbol: str, timeframe: str) -> None:
@@ -39,7 +55,7 @@ def get_open_positions() -> dict:
             size = float(pos.get("contracts", 0) or 0)
             if size == 0:
                 continue
-            symbol = pos["symbol"]
+            symbol = normalize_symbol(pos["symbol"])  # 'BTC/USDT:USDT' → 'BTC/USDT'
             result[symbol] = {
                 "side":           pos.get("side", "long"),
                 "size":           size,
@@ -48,6 +64,7 @@ def get_open_positions() -> dict:
                 "timestamp":      pos.get("timestamp", 0),
                 # 타임프레임: 진입 시 기록된 값, 없으면 "1h" 기본
                 "timeframe":      _position_timeframe.get(symbol, "1h"),
+                "raw_symbol":     pos["symbol"],  # 원본 ccxt symbol 보존 (청산 등에 사용)
             }
         return result
     except Exception as e:
