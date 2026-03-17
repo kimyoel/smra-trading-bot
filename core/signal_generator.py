@@ -10,6 +10,29 @@ from utils.logger import get_logger
 
 logger = get_logger("signal_generator")
 
+# 지표별 최소 필요 봉 수 (ICHIMOKU가 가장 큼: senkou=52 + 26선행 = 78봉)
+_INDICATOR_MIN_BARS = {
+    "ICHIMOKU": 80,   # 78봉 + 여유 2봉
+    "AROON":    28,
+    "OBV":      22,
+    "CMF":      22,
+    "EMA":      22,
+    "SMA":      22,
+    "VWAP":     22,
+    "ATR_SIG":  22,
+    "ADX":      16,
+    "RSI":      16,
+    "MFI":      16,
+    "WILLR":    16,
+    "PSAR":     12,
+    "ROC":      14,
+    "MOM":      12,
+}
+
+def _min_bars_required(indicators: list) -> int:
+    """전략의 지표 목록 기준 최소 필요 봉 수 반환"""
+    return max(_INDICATOR_MIN_BARS.get(ind, 20) for ind in indicators)
+
 
 def generate_all_signals() -> list[dict]:
     """
@@ -34,10 +57,14 @@ def generate_all_signals() -> list[dict]:
         symbol    = strategy["symbol"]
         timeframe = strategy["timeframe"]
 
-        # OHLCV 데이터 fetch
+        # OHLCV 데이터 fetch (캐시 히트)
         df = fetch_ohlcv(symbol, timeframe, limit=100)
-        if df is None or len(df) < 30:
-            logger.warning(f"[SIGNAL] {strategy_id} — 데이터 부족, 스킵")
+        min_bars = _min_bars_required(strategy["indicators"])
+        if df is None or len(df) < min_bars:
+            logger.warning(
+                f"[SIGNAL] {strategy_id} — 데이터 부족 "
+                f"({len(df) if df is not None else 0}봉 < 필요 {min_bars}봉), 스킵"
+            )
             continue
 
         # 3개 지표 AND 조건 체크
