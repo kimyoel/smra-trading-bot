@@ -1,5 +1,12 @@
 """
 core/signal_generator.py — 전략별 3개 지표 AND 조건 → 신호 생성
+
+[v2.6] 롱/숏 방향 일치 검증 추가
+  - indicators.py v2.1은 각 지표가 "long" / "short" / False 반환
+  - 이전 v2.5: all(results) 사용 → 문자열은 truthy라 "long"+"short" 혼재도 통과 (버그)
+  - v2.6 수정: 3개 지표 결과가 모두 동일한 방향(all "long" OR all "short")일 때만 신호
+  - 신호 dict에 direction 필드 추가 ("long" / "short")
+  - order_manager/signal_arbiter가 direction을 읽어 매수/매도 방향 결정
 """
 
 import pandas as pd
@@ -40,6 +47,8 @@ def generate_all_signals() -> list[dict]:
     신호 발생 시 signal dict 반환, 미발생 시 리스트에서 제외.
 
     v2.5: 유니크 (symbol, timeframe) 조합 병렬 pre-fetch → 직렬 대기 제거
+    v2.6: 방향 일치 검증 — 3개 지표가 모두 같은 방향일 때만 신호 발생
+          signal dict에 direction 필드 추가
     """
     signals = []
 
@@ -67,7 +76,7 @@ def generate_all_signals() -> list[dict]:
             )
             continue
 
-        # 3개 지표 AND 조건 체크
+        # ── [v2.6] 3개 지표 방향 체크 ───────────────────────────
         indicators = strategy["indicators"]
         results = []
         for ind_name in indicators:
@@ -77,24 +86,43 @@ def generate_all_signals() -> list[dict]:
                 results.append(False)
                 continue
             try:
-                result = fn(df)
+                result = fn(df)   # "long" / "short" / False
                 results.append(result)
             except Exception as e:
                 logger.error(f"[SIGNAL] {strategy_id} {ind_name} 계산 오류: {e}")
                 results.append(False)
 
-        # 3개 모두 True여야 신호
-        if not all(results):
+        # False(신호 없음) 제거 후 방향 집합 확인
+        directions = [r for r in results if r is not False and r]
+        if not directions:
+            continue  # 모든 지표 신호 없음
+
+        unique_dirs = set(directions)
+        if len(unique_dirs) != 1:
+            # 지표들 사이 방향 불일치 (일부 long, 일부 short) → 스킵
+            logger.debug(
+                f"[SIGNAL] {strategy_id} 방향 불일치 {results} → 스킵"
+            )
             continue
+
+        if len(directions) < len(indicators):
+            # 일부 지표가 False(신호 없음) → 3개 AND 조건 미충족
+            continue
+
+        direction = unique_dirs.pop()  # "long" or "short"
 
         entry_price = float(df["close"].iloc[-1])
         atr         = get_atr_value(df)
 
-        logger.info(f"[SIGNAL] ✅ {strategy_id} 신호 발생 | 진입가: {entry_price:.4f}")
+        logger.info(
+            f"[SIGNAL] ✅ {strategy_id} 신호 발생 | {direction.upper()} | "
+            f"진입가: {entry_price:.4f} | ATR: {atr:.4f}"
+        )
 
         signals.append({
             "strategy":    strategy,
             "signal":      True,
+            "direction":   direction,   # ← NEW: "long" or "short"
             "entry_price": entry_price,
             "atr":         atr,
         })

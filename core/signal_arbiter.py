@@ -1,5 +1,5 @@
 """
-core/signal_arbiter.py — 필터링 + Sharpe 정렬 (v2.2)
+core/signal_arbiter.py — 필터링 + Sharpe 정렬 (v2.3)
 
 변경사항:
   v2.1: H코드 문자열 대신 strategy의 tp_type/tp_mult/sl_mult 직접 사용
@@ -11,6 +11,13 @@ core/signal_arbiter.py — 필터링 + Sharpe 정렬 (v2.2)
            이것이 최소 기준(MIN_NET_PROFIT_PCT) 이상인지 체크
          - ATR 기반은 동적이라 필터는 생략하되 로그에 수수료 정보 출력
   [FIX2] arbitrate() 로그에 수수료 감안 순손익 표시
+  v2.3:
+  [FIX3] 롱/숏 양방향 TP/SL 계산 지원
+         - calc_tp_sl()에 direction 파라미터 추가
+         - SHORT: tp = entry × (1 - tp_mult), sl = entry × (1 + sl_mult)
+         - SHORT ATR: tp = entry - atr × tp_mult, sl = entry + atr × sl_mult
+         - TP/SL 유효성 필터도 direction 기반으로 수정
+         - 수수료 분석 로그도 방향 표시 추가
 """
 
 from config import MIN_NOTIONAL, CAPITAL_ALLOCATION
@@ -28,40 +35,55 @@ ROUND_TRIP_FEE  = TAKER_FEE_RATE * 2   # 0.09% (진입 + 청산 왕복)
 MIN_NET_PROFIT_PCT = 1.0   # 마진 기준 1% 이상
 
 
-def calc_tp_sl(entry: float, atr: float | None, strategy: dict) -> tuple[float, float]:
+def calc_tp_sl(
+    entry: float,
+    atr: float | None,
+    strategy: dict,
+    direction: str = "long",
+) -> tuple[float, float]:
     """
-    TP/SL 가격 계산.
+    TP/SL 가격 계산. (v2.3: direction 파라미터 추가)
 
-    tp_type="fixed":
-        tp = entry × (1 + tp_mult)
-        sl = entry × (1 - sl_mult)
-        예: tp_mult=0.010, sl_mult=0.005 → entry×1.01 / entry×0.995
+    LONG:
+        fixed → tp = entry × (1 + tp_mult),  sl = entry × (1 - sl_mult)
+        atr   → tp = entry + atr × tp_mult,  sl = entry - atr × sl_mult
 
-    tp_type="atr":
-        tp = entry + atr × tp_mult
-        sl = entry - atr × sl_mult
-        예: tp_mult=2.0, sl_mult=1.0 → entry+ATR×2 / entry-ATR×1
+    SHORT:
+        fixed → tp = entry × (1 - tp_mult),  sl = entry × (1 + sl_mult)
+        atr   → tp = entry - atr × tp_mult,  sl = entry + atr × sl_mult
 
     ATR가 None이거나 0인 경우 → fixed fallback (±1% / ±0.5%)
     """
     tp_type = strategy.get("tp_type", "fixed")
     tp_mult = strategy.get("tp_mult", 0.010)
     sl_mult = strategy.get("sl_mult", 0.005)
+    is_long = direction.lower() != "short"
 
     if tp_type == "atr":
-        # ATR 유효성 체크
         if not atr or atr <= 0:
             logger.warning(
                 f"[ARBITER] {strategy['id']} ATR={atr} 비정상 → fixed 1%/0.5% 폴백"
             )
-            tp = entry * 1.010
-            sl = entry * 0.995
+            if is_long:
+                tp = entry * 1.010
+                sl = entry * 0.995
+            else:
+                tp = entry * 0.990
+                sl = entry * 1.005
         else:
-            tp = entry + atr * tp_mult
-            sl = entry - atr * sl_mult
+            if is_long:
+                tp = entry + atr * tp_mult
+                sl = entry - atr * sl_mult
+            else:
+                tp = entry - atr * tp_mult
+                sl = entry + atr * sl_mult
     else:  # "fixed"
-        tp = entry * (1 + tp_mult)
-        sl = entry * (1 - sl_mult)
+        if is_long:
+            tp = entry * (1 + tp_mult)
+            sl = entry * (1 - sl_mult)
+        else:
+            tp = entry * (1 - tp_mult)
+            sl = entry * (1 + sl_mult)
 
     return tp, sl
 
@@ -146,21 +168,32 @@ def arbitrate(signals: list, balance: float, open_positions: dict) -> list:
             )
             continue
 
-        # ── TP/SL 계산 ────────────────────────────────────────
-        tp, sl = calc_tp_sl(entry, atr, strategy)
+        # ── TP/SL 계산 (v2.3: direction 전달) ───────────────
+        direction = sig.get("direction", "long")
+        tp, sl = calc_tp_sl(entry, atr, strategy, direction=direction)
 
-        # TP가 진입가보다 낮거나 SL이 진입가보다 높은 경우 필터 (데이터 이상)
-        if tp <= entry:
-            logger.warning(f"[ARBITER] {strategy_id} TP({tp:.4f}) <= entry({entry:.4f}) → 스킵")
-            continue
-        if sl >= entry:
-            logger.warning(f"[ARBITER] {strategy_id} SL({sl:.4f}) >= entry({entry:.4f}) → 스킵")
-            continue
+        is_long = direction.lower() != "short"
+
+        # TP/SL 유효성 필터 (방향에 따라 체크 기준 반전)
+        if is_long:
+            if tp <= entry:
+                logger.warning(f"[ARBITER] {strategy_id} LONG TP({tp:.4f}) <= entry({entry:.4f}) → 스킵")
+                continue
+            if sl >= entry:
+                logger.warning(f"[ARBITER] {strategy_id} LONG SL({sl:.4f}) >= entry({entry:.4f}) → 스킵")
+                continue
+        else:  # short
+            if tp >= entry:
+                logger.warning(f"[ARBITER] {strategy_id} SHORT TP({tp:.4f}) >= entry({entry:.4f}) → 스킵")
+                continue
+            if sl <= entry:
+                logger.warning(f"[ARBITER] {strategy_id} SHORT SL({sl:.4f}) <= entry({entry:.4f}) → 스킵")
+                continue
 
         # ── [v2.2] 필터 3: fixed TP 수수료 순이익 체크 ────────
         # ATR 기반은 ATR에 따라 동적으로 변하므로 필터 생략 (로그만 출력)
         if tp_type == "fixed":
-            tp_move_pct = (tp - entry) / entry * 100
+            tp_move_pct = abs((tp - entry) / entry * 100)
             fee_pct     = ROUND_TRIP_FEE * leverage * 100
             net_tp_pct  = tp_move_pct * leverage - fee_pct
 
@@ -173,21 +206,24 @@ def arbitrate(signals: list, balance: float, open_positions: dict) -> list:
                 continue
 
         # ── TP/SL 로그 ────────────────────────────────────────
+        dir_label = "LONG" if is_long else "SHORT"
         logger.info(
-            f"[ARBITER] {strategy_id} TP={tp:.4f} (+{(tp/entry-1)*100:.2f}%) | "
-            f"SL={sl:.4f} ({(sl/entry-1)*100:.2f}%)"
+            f"[ARBITER] {strategy_id} [{dir_label}] TP={tp:.4f} ({(tp/entry-1)*100:+.2f}%) | "
+            f"SL={sl:.4f} ({(sl/entry-1)*100:+.2f}%)"
         )
 
         # ── [v2.2] 수수료 분석 로그 ───────────────────────────
         _log_fee_analysis(strategy_id, entry, tp, sl, leverage, tp_type, win_rate)
 
+
         executable.append({
             **sig,
-            "tp":       tp,
-            "sl":       sl,
-            "margin":   margin,
-            "notional": notional,
-            "sharpe":   sharpe,
+            "tp":        tp,
+            "sl":        sl,
+            "margin":    margin,
+            "notional":  notional,
+            "sharpe":    sharpe,
+            "direction": direction,   # v2.3: sig에서 전달받은 방향 보존
         })
 
     # Sharpe 내림차순 정렬

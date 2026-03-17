@@ -1,5 +1,5 @@
 """
-core/order_manager.py — ccxt futures 주문 발행 (v2.15)
+core/order_manager.py — ccxt futures 주문 발행 (v2.16)
 
 버그 수정 히스토리:
   v2.13 : ccxt 4.5.43 + triggerPrice → /fapi/v1/algoOrder 자동 라우팅 (-4120 해결)
@@ -18,6 +18,13 @@ core/order_manager.py — ccxt futures 주문 발행 (v2.15)
            direction="long" (기본값): 기존 매수 진입
            direction="short": 매도 진입, TP/SL side 반전
          - close_position_market(): pos_side 파라미터 추가
+  v2.16 :
+  [FIX5] 실제 체결가 기반 TP/SL 재계산
+         - MARKET 진입 직후 entry_order["average"] 사용
+         - average가 None/0이면 fetch_order로 재조회 (최대 3회, 0.5초 간격)
+         - 그래도 실패 시 signal entry_price fallback (로그에 경고)
+         - 실제 체결가로 tp/sl 재계산 후 algo order 등록
+         → 슬리피지로 인한 TP/SL 가격 오차 제거
            position_manager의 side 정보로 올바른 청산 방향 결정
          현재 모든 전략은 direction 미설정 → "long" 기본값 → 기존 동작 유지
          숏 전략 추가 시 registry에 "direction": "short" 추가하면 자동 작동
@@ -228,8 +235,10 @@ def execute_order(sig: dict) -> bool:
     sl          = sig["sl"]
     entry       = sig["entry_price"]
 
-    # [v2.15] LONG/SHORT 방향 결정 (registry에 direction 없으면 "long" 기본값)
-    direction  = strategy.get("direction", "long").lower()
+    # [v2.16] LONG/SHORT 방향: signal_generator가 설정한 sig["direction"] 우선,
+    #          없으면 strategy 필드, 최종 폴백 "long"
+    direction  = sig.get("direction") or strategy.get("direction", "long")
+    direction  = direction.lower()
     entry_side = "buy"  if direction == "long" else "sell"
     dir_label  = "LONG" if direction == "long" else "SHORT"
 
@@ -276,6 +285,53 @@ def execute_order(sig: dict) -> bool:
         )
         entry_order_id = entry_order.get("id", "N/A")
         logger.info(f"[ORDER] 진입 주문 체결: {entry_order_id} ({dir_label})")
+
+        # [v2.16] 실제 체결가 확인 후 TP/SL 재계산
+        # MARKET 주문은 즉시 체결되지만 average 필드가 None일 수 있어 재조회
+        import time as _time
+        fill_price = entry_order.get("average") or entry_order.get("price")
+        if not fill_price or float(fill_price) <= 0:
+            for _retry in range(3):
+                _time.sleep(0.5)
+                try:
+                    fetched = exchange.fetch_order(entry_order_id, symbol)
+                    fill_price = fetched.get("average") or fetched.get("price")
+                    if fill_price and float(fill_price) > 0:
+                        logger.info(f"[ORDER] 체결가 재조회 성공 ({_retry+1}회): {fill_price}")
+                        break
+                except Exception as _fe:
+                    logger.warning(f"[ORDER] fetch_order 재시도 {_retry+1}/3 실패: {_fe}")
+        if fill_price and float(fill_price) > 0:
+            fill_price = float(fill_price)
+            # 전략 TP/SL 비율 그대로 실제 체결가에 적용
+            strat = sig["strategy"]
+            tp_type  = strat.get("tp_type", "fixed")
+            tp_mult  = strat.get("tp_mult", 0.01)
+            sl_mult  = strat.get("sl_mult", 0.005)
+            atr_val  = sig.get("atr", None)
+            if tp_type == "atr" and atr_val and float(atr_val) > 0:
+                if direction == "long":
+                    tp = fill_price + float(atr_val) * tp_mult
+                    sl = fill_price - float(atr_val) * sl_mult
+                else:
+                    tp = fill_price - float(atr_val) * tp_mult
+                    sl = fill_price + float(atr_val) * sl_mult
+            else:
+                if direction == "long":
+                    tp = fill_price * (1 + tp_mult)
+                    sl = fill_price * (1 - sl_mult)
+                else:
+                    tp = fill_price * (1 - tp_mult)
+                    sl = fill_price * (1 + sl_mult)
+            logger.info(
+                f"[ORDER] 체결가 기반 TP/SL 재계산 완료 | fill={fill_price:.4f} "
+                f"(signal={entry:.4f}, 슬리피지={abs(fill_price-entry)/entry*100:.3f}%) | "
+                f"TP={tp:.4f} ({(tp/fill_price-1)*100:+.2f}%) SL={sl:.4f} ({(sl/fill_price-1)*100:+.2f}%)"
+            )
+        else:
+            logger.warning(
+                f"[ORDER] 실제 체결가 조회 실패 → signal entry_price({entry:.4f}) fallback 사용"
+            )
 
         # 5. TAKE_PROFIT_MARKET — Algo Order API (v2.13+)
         try:
