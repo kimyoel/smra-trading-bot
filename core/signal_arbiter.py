@@ -1,5 +1,5 @@
 """
-core/signal_arbiter.py — 필터링 + Sharpe 정렬 (v2.3)
+core/signal_arbiter.py — 필터링 + Sharpe 정렬 (v2.4)
 
 변경사항:
   v2.1: H코드 문자열 대신 strategy의 tp_type/tp_mult/sl_mult 직접 사용
@@ -18,6 +18,12 @@ core/signal_arbiter.py — 필터링 + Sharpe 정렬 (v2.3)
          - SHORT ATR: tp = entry - atr × tp_mult, sl = entry + atr × sl_mult
          - TP/SL 유효성 필터도 direction 기반으로 수정
          - 수수료 분석 로그도 방향 표시 추가
+  v2.4:
+  [FIX4] _log_fee_analysis SHORT 방향 계산 버그 수정
+         - 기존: tp_move = (tp-entry)/entry*100 → SHORT에서 음수 → net_tp가 큰 음수로 표시
+         - 수정: tp_move = abs((tp-entry)/entry*100) → 이익방향 관계없이 크기만 추출
+         - LONG/SHORT 모두 오룰바른 순TP이익 기대수익 표시
+         - 로그에 [LONG]/[SHORT] 라벨 추가
 """
 
 from config import MIN_NOTIONAL, CAPITAL_ALLOCATION
@@ -96,28 +102,32 @@ def _log_fee_analysis(
     leverage: int,
     tp_type: str,
     win_rate: float,
+    direction: str = "long",
 ) -> None:
     """
-    [v2.2] 수수료 포함 순손익 분석 로그 출력.
+    [v2.4] 수수료 포함 순손익 분석 로그 출력. (롱/숏 방향 수정)
 
     마진 기준 계산:
         수수료(%) = ROUND_TRIP_FEE × leverage × 100
-        순TP이익(%) = TP가격이동% × leverage - 수수료%
-        순SL손실(%) = SL가격이동% × leverage + 수수료%
+        순TP이익(%) = abs(TP가격이동%) × leverage - 수수료%
+            → SHORT에서 TP는 entry 아래(음수)이므로 abs 필수
+        순SL손실(%) = abs(SL가격이동%) × leverage + 수수료%
         기대수익(%) = 승률 × 순TP이익 - (1-승률) × 순SL손실
     """
-    fee_pct    = ROUND_TRIP_FEE * leverage * 100   # 마진 기준 수수료 %
-    tp_move    = (tp - entry) / entry * 100         # TP 가격이동 %
-    sl_move    = abs((sl - entry) / entry * 100)    # SL 가격이동 %
+    fee_pct    = ROUND_TRIP_FEE * leverage * 100       # 마진 기준 수수료 %
+    # [v2.4 FIX] SHORT에서 tp_move는 음수(가격하락=이익방향) → abs로 이익크기만 추출
+    tp_move    = abs((tp - entry) / entry * 100)        # TP 이익방향 가격이동 크기 %
+    sl_move    = abs((sl - entry) / entry * 100)        # SL 손실방향 가격이동 크기 %
 
-    net_tp     = tp_move * leverage - fee_pct       # 순TP이익 %
-    net_sl     = sl_move * leverage + fee_pct       # 순SL손실 %
+    net_tp     = tp_move * leverage - fee_pct           # 순TP이익 %
+    net_sl     = sl_move * leverage + fee_pct           # 순SL손실 %
     ev         = win_rate * net_tp - (1 - win_rate) * net_sl   # 기대수익 %
 
-    ev_flag = "✅" if ev > 0 else "⚠️"
+    ev_flag    = "✅" if ev > 0 else "⚠️"
+    dir_label  = direction.upper()
 
     logger.info(
-        f"[ARBITER] 💰 수수료 분석 {strategy_id} ({tp_type}) | "
+        f"[ARBITER] 💰 수수료 분석 {strategy_id} [{dir_label}] ({tp_type}) | "
         f"레버리지 {leverage}x | 수수료(마진) {fee_pct:.2f}% | "
         f"순TP: +{net_tp:.1f}% | 순SL: -{net_sl:.1f}% | "
         f"기대수익(승률{win_rate:.0%}): {ev:+.2f}% {ev_flag}"
@@ -213,7 +223,7 @@ def arbitrate(signals: list, balance: float, open_positions: dict) -> list:
         )
 
         # ── [v2.2] 수수료 분석 로그 ───────────────────────────
-        _log_fee_analysis(strategy_id, entry, tp, sl, leverage, tp_type, win_rate)
+        _log_fee_analysis(strategy_id, entry, tp, sl, leverage, tp_type, win_rate, direction)
 
 
         executable.append({
