@@ -1,11 +1,15 @@
 """
-main.py — SMRA Bot 메인 루프 (v2.6)
+main.py — SMRA Bot 메인 루프 (v2.7)
 
-v2.6:
-  - 봉 마감 정각 동기화 추가 (wait_for_candle_close)
-    → 5분봉 정각 +3초에 루프 실행 보장
-    → 40초 딜레이 → 3초 이내로 단축
-  - 15m/1h 봉은 5분의 배수이므로 자동 커버
+v2.6: 봉 마감 정각 동기화 (wait_for_candle_close)
+v2.7:
+  [수정] 신호 TTL 개념 재정립
+    - 이전: "봉 마감 후 60초 이내에만 진입" → 5분봉 봇에서 의미 없음
+      (어차피 매 봉마다 새 신호 생성하므로 다음 봉에서 재시도가 맞음)
+    - 변경: "같은 루프 내 에러 연쇄로 봉이 넘어갔으면 진입 포기"
+      → 봉 경계 체크: 루프 시작 봉 != 현재 봉이면 나머지 신호 포기
+      → 다음 봉 마감 후 새 신호로 정상 진입
+  [수정] 청산 로직: get_position_age_bars → 파일 기반 entry_time 사용 (v2.9)
 """
 
 import time
@@ -33,8 +37,8 @@ logger = get_logger("main")
 TF_HOURS = {"5m": 2.0, "15m": 6.0, "1h": 24.0}
 
 # 봉 마감 동기화 설정
-CANDLE_TF_SEC   = 5 * 60   # 기준: 5분봉 (300초)
-CANDLE_OFFSET   = 3        # 봉 마감 후 3초 뒤 실행 (데이터 확정 여유)
+CANDLE_TF_SEC = 5 * 60   # 기준: 5분봉 (300초)
+CANDLE_OFFSET = 3        # 봉 마감 후 3초 뒤 실행 (데이터 확정 여유)
 
 
 def wait_for_candle_close() -> None:
@@ -54,8 +58,14 @@ def wait_for_candle_close() -> None:
     time.sleep(max(0, sleep_sec))
 
 
+def _current_candle_id() -> int:
+    """현재 5분봉 ID (Unix timestamp를 300으로 나눈 정수)"""
+    return int(time.time() / CANDLE_TF_SEC)
+
+
 def run_loop() -> None:
     """단일 루프 실행"""
+    candle_id_at_start = _current_candle_id()   # v2.7: 봉 경계 추적
     logger.info("=" * 60)
     logger.info("[LOOP] 루프 시작")
 
@@ -77,7 +87,7 @@ def run_loop() -> None:
     for symbol, pos_info in list(open_positions.items()):
         tf        = pos_info.get("timeframe", "1h")
         max_hours = TF_HOURS.get(tf, 24.0)
-        age_h     = get_position_age_bars(symbol)
+        age_h     = get_position_age_bars(symbol)   # 파일 기반 entry_time 사용
 
         if age_h > max_hours:
             logger.warning(
@@ -123,6 +133,18 @@ def run_loop() -> None:
         base_mdd    = strategy["base_mdd"]
         timeframe   = strategy["timeframe"]
 
+        # ── v2.7: 봉 경계 체크 ────────────────────────────────
+        # 에러 연쇄로 루프가 길어져 봉이 넘어간 경우 나머지 신호 포기
+        # → 다음 봉에서 새로 생성된 신호로 진입 (old 신호로 새 봉 진입 방지)
+        current_candle = _current_candle_id()
+        if current_candle != candle_id_at_start:
+            elapsed = (current_candle - candle_id_at_start) * CANDLE_TF_SEC
+            logger.warning(
+                f"[LOOP] ⏰ 봉 경계 초과 — {elapsed/60:.0f}분 경과, 봉 {current_candle - candle_id_at_start}개 지남 "
+                f"→ {strategy_id} 이후 포기, 다음 봉 대기"
+            )
+            break
+
         # ── 8. Circuit Breaker 체크 ────────────────────────────
         cb = check_circuit_breaker(symbol, strategy_id, base_mdd)
 
@@ -156,7 +178,7 @@ def run_loop() -> None:
         success = execute_order(top_sig)
 
         if success:
-            # ✅ 진입 성공 → 타임프레임 기록 (24봉 청산 계산용)
+            # ✅ 진입 성공 → 타임프레임 + 진입시각 파일 기록 (24봉 청산 계산용)
             record_position_timeframe(symbol, timeframe)
 
             notify_entry(
