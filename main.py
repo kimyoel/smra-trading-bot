@@ -1,5 +1,5 @@
 """
-main.py — SMRA Bot 메인 루프 (v2.8)
+main.py — SMRA Bot 메인 루프 (v2.9)
 
 v2.6: 봉 마감 정각 동기화 (wait_for_candle_close)
 v2.7: 신호 TTL → 봉 경계 체크로 대체, 파일 기반 entry_time (v2.9)
@@ -7,6 +7,13 @@ v2.8:
   [수정] 강제청산 시 close_position_market() 내부에서 Binance 실시간 size 재조회
          → pos_info["size"] 의존 제거 (부분청산 등 불일치 방지)
   [수정] cancel_all_open_orders() → 일반 주문 + Algo Order 동시 취소 (v2.14 연계)
+v2.9:
+  [FIX] 1심볼 2중 진입 완전 차단 — executed_symbols set 도입
+         기존 취약점: execute_order 실패(TP/SL 등록 실패 → 긴급청산 실패) 후
+         continue로 동일 심볼 다른 전략 재시도 → 2중 포지션 가능
+         → 한 번이라도 execute_order 호출한 심볼은 이번 루프에서 재시도 금지
+  [FIX] record_position_timeframe() → strategy_id 함께 저장 (v2.11 연계)
+         → 24봉 강제청산 로그에 어떤 전략으로 진입했는지 표시
 """
 
 import time
@@ -96,7 +103,8 @@ def run_loop() -> None:
                 f"{symbol} {age_h:.1f}h 초과 → {tf} 24봉 기준 강제 청산"
             )
             cancel_all_open_orders(symbol)          # 일반 + Algo Order 동시 취소
-            close_position_market(symbol)              # v2.8: 내부에서 실시간 size 조회
+            pos_side = pos_info.get("side", "long")  # [v2.9] Binance에서 조회한 포지션 방향
+            close_position_market(symbol, pos_side=pos_side)  # v2.15: 방향 전달
 
     # ── 5. 신호 생성 ──────────────────────────────────────────
     try:
@@ -122,6 +130,8 @@ def run_loop() -> None:
 
     # ── 7. Sharpe 순 실행 (CB 발동 시 다음 신호 폴오버) ───────
     order_placed = False
+    executed_symbols: set = set()   # [v2.9] 이번 루프에서 execute_order 호출한 심볼 추적
+
     for top_sig in executable:
         strategy    = top_sig["strategy"]
         symbol      = strategy["symbol"]
@@ -129,6 +139,16 @@ def run_loop() -> None:
         leverage    = strategy["leverage"]
         base_mdd    = strategy["base_mdd"]
         timeframe   = strategy["timeframe"]
+
+        # [v2.9] 1심볼 2중 진입 완전 차단
+        # execute_order 호출 후 실패(TP/SL 실패→긴급청산 실패 등)해도
+        # 동일 심볼로 다시 시도하면 2중 포지션 위험 → 이번 루프에서 완전 금지
+        if symbol in executed_symbols:
+            logger.warning(
+                f"[LOOP] ⚠️ 2중진입 차단: {strategy_id} | {symbol} "
+                f"이번 루프에서 이미 execute_order 호출됨 → 스킵"
+            )
+            continue
 
         # ── v2.7: 봉 경계 체크 ────────────────────────────────
         # 에러 연쇄로 루프가 길어져 봉이 넘어간 경우 나머지 신호 포기
@@ -172,11 +192,12 @@ def run_loop() -> None:
             f"SL {sl:.4f} ({(sl/entry-1)*100:.2f}%)"
         )
 
+        executed_symbols.add(symbol)   # [v2.9] 호출 즉시 등록 (성공/실패 무관)
         success = execute_order(top_sig)
 
         if success:
-            # ✅ 진입 성공 → 타임프레임 + 진입시각 파일 기록 (24봉 청산 계산용)
-            record_position_timeframe(symbol, timeframe)
+            # ✅ 진입 성공 → 타임프레임 + 진입시각 + 전략ID 파일 기록 (24봉 청산용)
+            record_position_timeframe(symbol, timeframe, strategy_id)  # v2.9: strategy_id 추가
 
             notify_entry(
                 strategy_id=strategy_id,
@@ -192,7 +213,7 @@ def run_loop() -> None:
             order_placed = True
             break
         else:
-            logger.error(f"[LOOP] ❌ 주문 실패: {strategy_id} → 다음 신호 시도")
+            logger.error(f"[LOOP] ❌ 주문 실패: {strategy_id} → {symbol} 이번 루프 재시도 금지")
 
     if not order_placed:
         logger.info("[LOOP] 모든 신호 시도 완료 (주문 없음)")

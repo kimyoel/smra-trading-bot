@@ -1,5 +1,5 @@
 """
-core/position_manager.py — 심볼당 1포지션 상태 추적 (v2.10)
+core/position_manager.py — 심볼당 1포지션 상태 추적 (v2.11)
 
 수정 히스토리:
   v2.8 : ccxt unified symbol 정규화 (BTC/USDT:USDT → BTC/USDT)
@@ -8,12 +8,11 @@ core/position_manager.py — 심볼당 1포지션 상태 추적 (v2.10)
           포지션 닫히면 state.json 자동 정리
   v2.10:
   [FIX1] get_open_positions_live(): Binance fetch_positions() 직접 조회 함수 분리
-         → 포지션 크기/진입가/PnL은 항상 Binance 실시간 데이터 사용
-         → entry_time/timeframe만 state.json에서 보완 (Binance가 진입 시각 미제공)
   [FIX2] get_realtime_position_size(): 강제청산/조회 시 Binance 실시간 크기 단독 조회
-         → close_position_market()에서 size 불일치 방지
   [FIX3] get_open_algo_orders(): 현재 등록된 Algo Order(TP/SL) 목록 조회
-         → Algo Order 존재 여부 확인, 누락 체크 가능
+  v2.11:
+  [FIX4] record_position_timeframe(): strategy_id 파라미터 추가 → state.json에 저장
+         → 24봉 강제청산 로그, 포지션 추적 시 어떤 전략으로 진입했는지 기록
 """
 
 import json
@@ -66,18 +65,25 @@ def normalize_symbol(symbol: str) -> str:
     return symbol
 
 
-def record_position_timeframe(symbol: str, timeframe: str) -> None:
+def record_position_timeframe(symbol: str, timeframe: str, strategy_id: str = "") -> None:
     """
-    진입 시 타임프레임 + 진입 시각 기록 (v2.9: 파일 영속화).
+    진입 시 타임프레임 + 진입 시각 + 전략 ID 기록 (v2.11: strategy_id 추가).
     order 성공 직후 main.py에서 호출.
+
+    state.json 구조:
+        {"BTC/USDT": {"timeframe": "5m", "entry_time": 1234567890.0, "strategy_id": "BTC_5m_PSAR_ROC"}}
     """
     state = _load_state()
     state[symbol] = {
-        "timeframe":  timeframe,
-        "entry_time": time.time(),   # Unix timestamp (초)
+        "timeframe":   timeframe,
+        "entry_time":  time.time(),   # Unix timestamp (초)
+        "strategy_id": strategy_id,   # v2.11: 어떤 전략으로 진입했는지 기록
     }
     _save_state(state)
-    logger.info(f"[POSITION] 진입 기록: {symbol} TF={timeframe} at {time.strftime('%H:%M:%S')}")
+    logger.info(
+        f"[POSITION] 진입 기록: {symbol} | TF={timeframe} | 전략={strategy_id or '?'} "
+        f"| at {time.strftime('%H:%M:%S')}"
+    )
 
 
 def _cleanup_closed_positions(open_symbols: set) -> None:
@@ -179,6 +185,7 @@ def get_open_positions() -> dict:
                 "unrealized_pnl": float(pos.get("unrealizedPnl", 0) or 0),  # ← Binance 실시간
                 "entry_time":     entry_time,                            # ← state.json 우선
                 "timeframe":      saved.get("timeframe", "1h"),          # ← state.json 우선
+                "strategy_id":    saved.get("strategy_id", ""),          # ← v2.11: 전략 ID
                 "raw_symbol":     pos["symbol"],
             }
 

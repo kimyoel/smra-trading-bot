@@ -1,19 +1,26 @@
 """
-core/order_manager.py — ccxt futures 주문 발행 (v2.14)
+core/order_manager.py — ccxt futures 주문 발행 (v2.15)
 
 버그 수정 히스토리:
   v2.13 : ccxt 4.5.43 + triggerPrice → /fapi/v1/algoOrder 자동 라우팅 (-4120 해결)
   v2.14 :
   [FIX1] cancel_all_open_orders(): 일반 주문 + Algo Order 동시 취소
-         기존 cancel_all_orders()는 /fapi/v1/allOpenOrders만 취소 →
-         algoOrder(/fapi/v1/algoOpenOrders)는 잔존 → 포지션 청산 후 TP/SL 좀비 주문 발생
-         → fapiPrivateDeleteAlgoOpenOrders도 함께 호출
-  [FIX2] close_position_market(): size 외부 파라미터 대신 Binance 실시간 포지션 재조회
-         → 포지션 크기 불일치(부분 청산 등) 방지
-  [FIX3] TP/SL 레버리지 검토 → 현재 방식(가격 기준) 유지가 올바름
-         선물 TP/SL은 항상 '가격 이동 %' 기준. 레버리지는 손익 배율에만 영향.
-         단, SL 가격이 강제청산(Liquidation) 가격보다 높은지 안전 체크 추가.
-         liquidation price ≈ entry × (1 - 1/leverage + MMR) 에서 SL이 liq보다 먼저여야 안전.
+  [FIX2] close_position_market(): Binance 실시간 포지션 크기 재조회
+  [FIX3] SL/강제청산 가격 안전 체크 (_check_sl_above_liquidation)
+  v2.15 :
+  [FIX4] LONG/SHORT 양방향 지원 구조 추가
+         - _place_algo_order(): direction 파라미터 추가
+           LONG TP/SL → side="sell" (반대방향 청산)
+           SHORT TP/SL → side="buy" (반대방향 청산)
+         - _emergency_close(): direction 파라미터 추가
+           LONG 긴급청산 → side="sell" / SHORT 긴급청산 → side="buy"
+         - execute_order(): strategy의 direction 필드 읽기
+           direction="long" (기본값): 기존 매수 진입
+           direction="short": 매도 진입, TP/SL side 반전
+         - close_position_market(): pos_side 파라미터 추가
+           position_manager의 side 정보로 올바른 청산 방향 결정
+         현재 모든 전략은 direction 미설정 → "long" 기본값 → 기존 동작 유지
+         숏 전략 추가 시 registry에 "direction": "short" 추가하면 자동 작동
 """
 
 import math
@@ -140,6 +147,7 @@ def _place_algo_order(
     order_type: str,
     stop_price: float,
     amount: float,
+    direction: str = "long",   # [v2.15] "long" | "short"
 ) -> dict:
     """
     TP/SL 주문을 Binance Algo Order API로 전송 (v2.13+).
@@ -147,11 +155,16 @@ def _place_algo_order(
     2025-12-09 바이낸스 변경 후 TAKE_PROFIT_MARKET / STOP_MARKET은
     POST /fapi/v1/algoOrder 엔드포인트만 허용. ccxt 4.5.43+에서
     triggerPrice 파라미터 사용 시 자동으로 fapiPrivatePostAlgoOrder 라우팅.
+
+    [v2.15] One-way 모드 방향별 side:
+        LONG 포지션 청산 → side="sell" (TP/SL 모두)
+        SHORT 포지션 청산 → side="buy"  (TP/SL 모두)
     """
+    close_side = "sell" if direction == "long" else "buy"
     return exchange.create_order(
         symbol=symbol,
         type=order_type,
-        side="sell",
+        side=close_side,
         amount=amount,
         price=None,
         params={
@@ -163,11 +176,15 @@ def _place_algo_order(
     )
 
 
-def _emergency_close(symbol: str, amount: float) -> None:
+def _emergency_close(symbol: str, amount: float, direction: str = "long") -> None:
     """
-    TP/SL 등록 실패 시 긴급 시장가 청산.
+    TP/SL 등록 실패 시 긴급 시장가 청산. (v2.15: direction 파라미터 추가)
     무방어 포지션 방지용 안전장치.
+
+    LONG 포지션 긴급청산 → side="sell"
+    SHORT 포지션 긴급청산 → side="buy"
     """
+    close_side = "sell" if direction == "long" else "buy"
     try:
         size = _round_amount(symbol, amount)
         if size <= 0:
@@ -176,26 +193,31 @@ def _emergency_close(symbol: str, amount: float) -> None:
         exchange.create_order(
             symbol=symbol,
             type="MARKET",
-            side="sell",
+            side=close_side,
             amount=size,
             params={"reduceOnly": True}
         )
-        logger.warning(f"[ORDER] ⚠️ 긴급 청산 완료: {symbol} {size} (TP/SL 등록 실패 대응)")
+        logger.warning(f"[ORDER] ⚠️ 긴급 청산 완료: {symbol} {size} dir={direction} (TP/SL 등록 실패 대응)")
     except Exception as e:
         logger.error(f"[ORDER] 긴급 청산 실패 {symbol}: {e} — 수동 확인 필요!")
 
 
 def execute_order(sig: dict) -> bool:
     """
-    진입 주문 + TP + SL 발행.
+    진입 주문 + TP + SL 발행. (v2.15: LONG/SHORT 방향 지원)
 
     1. 레버리지 설정
     2. 수량 계산 (precision + min_qty + min_notional 체크)
-    3. SL/강제청산 가격 안전 체크 (v2.14)
-    4. MARKET 진입 주문
+    3. SL/강제청산 가격 안전 체크 (v2.14, LONG만)
+    4. MARKET 진입 주문 (LONG=buy / SHORT=sell)
     5. TAKE_PROFIT_MARKET (→ /fapi/v1/algoOrder)
     6. STOP_MARKET        (→ /fapi/v1/algoOrder)
     * TP/SL 실패 시 → 즉시 긴급 청산 후 False 반환
+
+    [v2.15] strategy에 direction 필드 추가로 숏 지원:
+        direction="long"  (기본값): BUY 진입, SELL TP/SL
+        direction="short": SELL 진입, BUY TP/SL
+    현재 모든 전략은 direction 미설정 → "long" 기본값 → 기존 동작 완전 유지
     """
     strategy    = sig["strategy"]
     symbol      = strategy["symbol"]
@@ -205,6 +227,11 @@ def execute_order(sig: dict) -> bool:
     tp          = sig["tp"]
     sl          = sig["sl"]
     entry       = sig["entry_price"]
+
+    # [v2.15] LONG/SHORT 방향 결정 (registry에 direction 없으면 "long" 기본값)
+    direction  = strategy.get("direction", "long").lower()
+    entry_side = "buy"  if direction == "long" else "sell"
+    dir_label  = "LONG" if direction == "long" else "SHORT"
 
     entry_order_id = None
     amount         = 0.0
@@ -228,45 +255,46 @@ def execute_order(sig: dict) -> bool:
 
         amount = _ensure_min_notional(symbol, amount, entry)
 
-        # 3. [v2.14] SL / 강제청산 가격 안전 체크
-        _check_sl_above_liquidation(symbol, entry, sl, leverage)
+        # 3. SL / 강제청산 가격 안전 체크 (LONG만: SHORT는 반대 방향 공식 필요)
+        if direction == "long":
+            _check_sl_above_liquidation(symbol, entry, sl, leverage)
 
         logger.info(
-            f"[ORDER] 진입 시도 | {strategy_id} | {symbol} LONG | "
+            f"[ORDER] 진입 시도 | {strategy_id} | {symbol} {dir_label} | "
             f"수량: {amount} | 마진: ${margin:.2f} | {leverage}x | "
-            f"TP: {tp:.4f} (+{(tp/entry-1)*100:.2f}%) | "
-            f"SL: {sl:.4f} ({(sl/entry-1)*100:.2f}%) | "
-            f"자본기준 TP: +{(tp/entry-1)*100*leverage:.1f}% / SL: {(sl/entry-1)*100*leverage:.1f}%"
+            f"TP: {tp:.4f} ({(tp/entry-1)*100:+.2f}%) | "
+            f"SL: {sl:.4f} ({(sl/entry-1)*100:+.2f}%) | "
+            f"자본기준 TP: {(tp/entry-1)*100*leverage:+.1f}% / SL: {(sl/entry-1)*100*leverage:+.1f}%"
         )
 
         # 4. MARKET 진입 주문
         entry_order = exchange.create_order(
             symbol=symbol,
             type="MARKET",
-            side="buy",
+            side=entry_side,   # LONG=buy / SHORT=sell
             amount=amount,
         )
         entry_order_id = entry_order.get("id", "N/A")
-        logger.info(f"[ORDER] 진입 주문 체결: {entry_order_id}")
+        logger.info(f"[ORDER] 진입 주문 체결: {entry_order_id} ({dir_label})")
 
         # 5. TAKE_PROFIT_MARKET — Algo Order API (v2.13+)
         try:
-            tp_resp = _place_algo_order(symbol, "TAKE_PROFIT_MARKET", tp, amount)
+            tp_resp = _place_algo_order(symbol, "TAKE_PROFIT_MARKET", tp, amount, direction)
             tp_id   = tp_resp.get("id", tp_resp.get("algoId", "N/A"))
             logger.info(f"[ORDER] TP algoOrder 등록: {tp_id} @ {tp:.4f}")
         except Exception as e:
             logger.error(f"[ORDER] TP 등록 실패 → 긴급 청산 실행: {e}")
-            _emergency_close(symbol, amount)
+            _emergency_close(symbol, amount, direction)
             return False
 
         # 6. STOP_MARKET — Algo Order API (v2.13+)
         try:
-            sl_resp = _place_algo_order(symbol, "STOP_MARKET", sl, amount)
+            sl_resp = _place_algo_order(symbol, "STOP_MARKET", sl, amount, direction)
             sl_id   = sl_resp.get("id", sl_resp.get("algoId", "N/A"))
             logger.info(f"[ORDER] SL algoOrder 등록: {sl_id} @ {sl:.4f}")
         except Exception as e:
             logger.error(f"[ORDER] SL 등록 실패 → 긴급 청산 실행: {e}")
-            _emergency_close(symbol, amount)
+            _emergency_close(symbol, amount, direction)
             return False
 
         return True
@@ -274,22 +302,22 @@ def execute_order(sig: dict) -> bool:
     except ccxt.InsufficientFunds as e:
         logger.error(f"[ORDER] 잔고 부족 {strategy_id}: {e}")
         if entry_order_id:
-            _emergency_close(symbol, amount)
+            _emergency_close(symbol, amount, direction)
         return False
     except ccxt.InvalidOrder as e:
         logger.error(f"[ORDER] 잘못된 주문 {strategy_id}: {e}")
         if entry_order_id:
-            _emergency_close(symbol, amount)
+            _emergency_close(symbol, amount, direction)
         return False
     except ccxt.ExchangeError as e:
         logger.error(f"[ORDER] 거래소 오류 {strategy_id}: {e}")
         if entry_order_id:
-            _emergency_close(symbol, amount)
+            _emergency_close(symbol, amount, direction)
         return False
     except Exception as e:
         logger.error(f"[ORDER] 알 수 없는 오류 {strategy_id}: {e}")
         if entry_order_id:
-            _emergency_close(symbol, amount)
+            _emergency_close(symbol, amount, direction)
         return False
 
 
@@ -320,13 +348,15 @@ def cancel_all_open_orders(symbol: str) -> None:
         logger.warning(f"[ORDER] Algo 주문 취소 실패 (없을 수도 있음) {symbol}: {e}")
 
 
-def close_position_market(symbol: str, size: float = 0.0) -> None:
+def close_position_market(symbol: str, size: float = 0.0, pos_side: str = "long") -> None:
     """
-    시장가 강제 청산 (v2.14: Binance 실시간 포지션 크기 재조회).
+    시장가 강제 청산 (v2.15: pos_side 파라미터 추가 → LONG/SHORT 올바른 방향 청산).
 
     기존: 외부에서 넘겨받은 size 사용 → 부분 청산, 누락 등으로 불일치 가능
-    변경: Binance fetch_positions()로 실시간 포지션 크기 조회 후 사용
-          조회 실패 또는 포지션 없으면 파라미터 size 폴백 사용
+    v2.14: Binance fetch_positions()로 실시간 포지션 크기 조회 후 사용
+    v2.15: pos_side로 청산 방향 결정
+           LONG 포지션 청산 → side="sell"
+           SHORT 포지션 청산 → side="buy"
     """
     # Binance 실시간 포지션 크기 재조회
     try:
@@ -349,6 +379,7 @@ def close_position_market(symbol: str, size: float = 0.0) -> None:
             f"[ORDER] 강제청산 실시간 조회 실패 — 파라미터 size({size}) 폴백: {e}"
         )
 
+    close_side = "sell" if pos_side == "long" else "buy"   # [v2.15]
     size = _round_amount(symbol, size)
     if size <= 0:
         logger.warning(f"[ORDER] {symbol} 강제청산 수량 0 → 스킵")
@@ -358,10 +389,10 @@ def close_position_market(symbol: str, size: float = 0.0) -> None:
         exchange.create_order(
             symbol=symbol,
             type="MARKET",
-            side="sell",
+            side=close_side,
             amount=size,
             params={"reduceOnly": True}
         )
-        logger.info(f"[ORDER] {symbol} 강제 청산 완료 (size={size})")
+        logger.info(f"[ORDER] {symbol} 강제 청산 완료 (size={size}, side={close_side})")
     except Exception as e:
         logger.error(f"[ORDER] 강제 청산 실패 {symbol}: {e}")
