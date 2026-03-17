@@ -1,11 +1,14 @@
 """
-core/data_manager.py — ccxt OHLCV fetch + 캐시 (v2.3)
+core/data_manager.py — ccxt OHLCV fetch + 캐시 (v2.4)
 
 버그 수정:
   - ccxt.binanceusdm().fetch_balance() 내부에서 load_markets() 시
     sapi/v1/capital/config/getall (Spot API) 호출 → 지역 차단
   - get_balance()를 fapiPrivateGetBalance() 직접 호출로 변경
     → fapi.binance.com만 사용, Spot API 완전 우회
+  v2.4:
+  - fapiPrivateGetBalance() → fapiPrivateV2GetBalance()
+    /fapi/v1/balance deprecated → /fapi/v2/balance 로 변경
 """
 
 import os
@@ -82,15 +85,18 @@ def fetch_orderbook(symbol: str) -> dict | None:
 def get_balance() -> float:
     """
     USDT 선물 잔고 직접 조회.
-    fapiPrivateGetBalance() → fapi.binance.com/fapi/v1/balance
+    fapiPrivateV2GetBalance() → fapi.binance.com/fapi/v2/balance
+    /fapi/v1/balance deprecated → v2 엔드포인트 사용
     fetch_balance() 대신 사용 → Spot sapi 엔드포인트 완전 우회
     """
     try:
-        response = exchange.fapiPrivateGetBalance()
+        response = exchange.fapiPrivateV2GetBalance()
         for asset in response:
             if asset.get("asset") == "USDT":
-                return float(asset.get("availableBalance", 0.0))
-        logger.warning("[DATA] USDT 잔고 항목 없음")
+                bal = float(asset.get("availableBalance", 0.0))
+                logger.info(f"[DATA] 잔고 조회 성공: {bal:.2f} USDT")
+                return bal
+        logger.warning("[DATA] USDT 잔고 항목 없음 (잔고 0 또는 미입금)")
         return 0.0
     except Exception as e:
         logger.error(f"[DATA] 잔고 조회 실패: {e}")
