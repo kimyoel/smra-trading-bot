@@ -76,12 +76,15 @@ def run_loop() -> None:
     # ── 1. 캐시 초기화 (루프당 1회) ──────────────────────────
     clear_cache()
 
-    # ── 2. 잔고 조회 (free balance) ──────────────────────────
-    balance = get_balance()
-    if balance <= 0:
+    # ── 2. 잔고 조회 (total = 배분 기준, free = 진입 가능 체크용) ──
+    balance_total, balance_free = get_balance()
+    if balance_total <= 0:
         logger.warning("[LOOP] 잔고 0 또는 조회 실패 — 이번 루프 스킵")
         return
-    logger.info(f"[LOOP] 현재 잔고: ${balance:.2f} USDT (free)")
+    logger.info(
+        f"[LOOP] 잔고 | total=${balance_total:.2f} USDT (walletBalance) | "
+        f"free=${balance_free:.2f} USDT (availableBalance)"
+    )
 
     # ── 3. 현재 포지션 조회 ───────────────────────────────────
     open_positions = get_open_positions()
@@ -121,7 +124,7 @@ def run_loop() -> None:
     logger.info(f"[LOOP] 신호 발생: {len(signals)}개")
 
     # ── 6. Arbiter 필터링 ─────────────────────────────────────
-    executable = arbitrate(signals, balance, open_positions)
+    executable = arbitrate(signals, balance_total, open_positions)
     logger.info(f"[LOOP] 실행 가능 신호: {len(executable)}개")
 
     if not executable:
@@ -179,7 +182,17 @@ def run_loop() -> None:
             logger.info(f"[LOOP] 펀딩비 높음 → 레버리지 {leverage}x → {reduced_lev}x")
 
         # ── 9. MDD 업데이트 ────────────────────────────────────
-        update_strategy_mdd(strategy_id, balance, base_mdd)
+        update_strategy_mdd(strategy_id, balance_total, base_mdd)
+
+        # ── 9-1. [v2.10] free 잔고 검증 (total 기준 마진 ≠ free 바닥) ──
+        # total으로 마진 계산했지만 실제로 진입할 수 있는지 free 로 커버 확인
+        required_margin = top_sig["margin"]
+        if balance_free < required_margin:
+            logger.warning(
+                f"[LOOP] ⚠️ 여유잔고 부족 — {strategy_id} | "
+                f"필요 마진 ${required_margin:.2f} > free ${balance_free:.2f} → 스킵"
+            )
+            continue
 
         # ── 10. 주문 실행 ─────────────────────────────────────
         entry = top_sig['entry_price']

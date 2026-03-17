@@ -89,25 +89,32 @@ def fetch_orderbook(symbol: str) -> dict | None:
         return None
 
 
-def get_balance() -> float:
+def get_balance() -> tuple[float, float]:
     """
-    USDT 선물 잔고 직접 조회.
+    USDT 선물 잔고 직접 조회. (v2: total + free 동시 반환)
     fapiPrivateV2GetBalance() → fapi.binance.com/fapi/v2/balance
-    /fapi/v1/balance deprecated → v2 엔드포인트 사용
-    fetch_balance() 대신 사용 → Spot sapi 엔드포인트 완전 우회
+
+    Returns:
+        (total, free) 튜플
+        - total = walletBalance   : 총 자본 (포지션에 묶인 마진 포함, 미실현PnL 제외)
+        - free  = availableBalance: 현재 사용 가능한 여유 잔고
+
+    [v2 FIX] 이전 버전은 availableBalance만 반환 → 포지션 진입 후 여유잔고가 줄어
+             배분 마진도 같이 줄어드는 버그 발생. total 기준으로 배분해야 함.
     """
     try:
         response = exchange.fapiPrivateV2GetBalance()
         for asset in response:
             if asset.get("asset") == "USDT":
-                bal = float(asset.get("availableBalance", 0.0))
-                logger.info(f"[DATA] 잔고 조회 성공: {bal:.2f} USDT")
-                return bal
+                total = float(asset.get("walletBalance",    0.0))
+                free  = float(asset.get("availableBalance", 0.0))
+                logger.info(f"[DATA] 잔고 조회 성공: total={total:.2f} USDT / free={free:.2f} USDT")
+                return total, free
         logger.warning("[DATA] USDT 잔고 항목 없음 (잔고 0 또는 미입금)")
-        return 0.0
+        return 0.0, 0.0
     except Exception as e:
         logger.error(f"[DATA] 잔고 조회 실패: {e}")
-        return 0.0
+        return 0.0, 0.0
 
 
 def fetch_ohlcv_parallel(pairs: list[tuple[str, str]], limit: int = 100) -> None:
