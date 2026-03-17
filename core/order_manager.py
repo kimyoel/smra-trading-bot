@@ -1,16 +1,21 @@
 """
-core/order_manager.py — ccxt futures 주문 발행 (v2.12)
+core/order_manager.py — ccxt futures 주문 발행 (v2.13)
 
 버그 수정 히스토리:
   v2.1  : amount precision, min_qty, set_leverage 재시도
   v2.10 : positionSide 제거(단방향모드 -4061), 명목가치 자동 보정(-4164)
-  v2.11 : [미배포] closePosition=True 시도 (amount=0 방식)
-  v2.12 :
-  [FIX1] -4120 완전 해결: fapiPrivatePostOrder 직접 호출
-         ccxt create_order(amount=0) 방식은 ccxt 버전에 따라 quantity=0을 API에 전달,
-         Binance가 -4120 반환. 해결: REST API 직접 호출로 quantity 파라미터 완전 제거.
+  v2.11 : [미배포] closePosition=True 시도 (amount=0 방식) → 실패
+  v2.12 : fapiPrivatePostOrder 직접 호출 시도 → 여전히 -4120
+           (POST /fapi/v1/order 자체가 2025-12-09 이후 조건부 주문 차단됨)
+  v2.13 :
+  [FIX1] -4120 완전 해결: ccxt 4.5.43 + create_order(triggerPrice=...) 방식
+         2025-12-09 바이낸스 변경으로 TAKE_PROFIT_MARKET/STOP_MARKET은
+         반드시 POST /fapi/v1/algoOrder 엔드포인트를 사용해야 함.
+         ccxt 4.5.43에서 triggerPrice/stopLossPrice/takeProfitPrice 파라미터를
+         넘기면 자동으로 fapiPrivatePostAlgoOrder(algoType=CONDITIONAL)로 라우팅됨.
   [FIX2] TP/SL 실패 시 즉시 긴급 시장가 청산 + 로깅 강화 (무방어 포지션 방지)
   [FIX3] 부동소수점 보정: round() 처리 유지
+  [REQ]  requirements.txt: ccxt==4.5.43 필수
 """
 
 import math
@@ -34,14 +39,6 @@ MIN_QTY = {
     "ETH/USDT":  0.001,
     "XRP/USDT":  1.0,
 }
-
-# ── ccxt unified → Binance raw symbol 변환 ──────────────────
-def _to_raw_symbol(symbol: str) -> str:
-    """
-    'BTC/USDT' → 'BTCUSDT'
-    'BTC/USDT:USDT' → 'BTCUSDT'
-    """
-    return symbol.split(":")[0].replace("/", "")
 
 
 def _round_amount(symbol: str, amount: float) -> float:
@@ -84,36 +81,44 @@ def set_leverage(symbol: str, leverage: int) -> bool:
         return False
 
 
-def _place_close_order(symbol: str, order_type: str, stop_price: float) -> dict:
+def _place_algo_order(
+    symbol: str,
+    order_type: str,
+    stop_price: float,
+    amount: float,
+) -> dict:
     """
-    TP/SL 주문을 Binance Futures REST API에 직접 전송 (v2.12 핵심 수정).
+    TP/SL 주문을 Binance Algo Order API로 전송 (v2.13 핵심 수정).
 
-    ccxt create_order(amount=0, params={'closePosition': True}) 방식은
-    ccxt 버전에 따라 quantity=0을 API에 전달 → -4120 에러 유발.
-
-    fapiPrivatePostOrder 직접 호출 시 quantity 파라미터를 아예 생략하여
-    closePosition=true만 전달 → Binance 공식 권장 방식.
+    2025-12-09 바이낸스 변경 후 TAKE_PROFIT_MARKET / STOP_MARKET은
+    POST /fapi/v1/order가 아닌 POST /fapi/v1/algoOrder 엔드포인트만 허용.
+    ccxt 4.5.43+에서 triggerPrice 파라미터를 사용하면 자동으로
+    fapiPrivatePostAlgoOrder(algoType=CONDITIONAL)로 라우팅됨.
 
     Args:
         symbol:     ccxt unified symbol (e.g. 'BTC/USDT')
         order_type: 'TAKE_PROFIT_MARKET' | 'STOP_MARKET'
         stop_price: trigger price (float)
+        amount:     포지션 수량 (closePosition=true 동작을 위해 실제 수량 전달)
     """
-    raw_symbol = _to_raw_symbol(symbol)
-    return exchange.fapiPrivatePostOrder({
-        "symbol":      raw_symbol,
-        "side":        "SELL",
-        "type":        order_type,
-        "stopPrice":   f"{stop_price:.2f}",
-        "closePosition": "true",
-        "workingType": "MARK_PRICE",
-        "timeInForce": "GTE_GTC",
-    })
+    return exchange.create_order(
+        symbol=symbol,
+        type=order_type,
+        side="sell",           # LONG 청산
+        amount=amount,
+        price=None,
+        params={
+            "triggerPrice":  str(round(stop_price, 2)),
+            "workingType":   "MARK_PRICE",
+            "timeInForce":   "GTE_GTC",
+            "reduceOnly":    True,
+        },
+    )
 
 
 def _emergency_close(symbol: str, amount: float) -> None:
     """
-    TP/SL 등록 실패 시 긴급 시장가 청산 (v2.12).
+    TP/SL 등록 실패 시 긴급 시장가 청산 (v2.12+).
     무방어 포지션 방지용 안전장치.
     """
     try:
@@ -140,8 +145,8 @@ def execute_order(sig: dict) -> bool:
     1. 레버리지 설정
     2. 수량 계산 (precision + min_qty + min_notional 체크)
     3. MARKET 진입 주문
-    4. TAKE_PROFIT_MARKET (fapiPrivatePostOrder, closePosition=true)
-    5. STOP_MARKET        (fapiPrivatePostOrder, closePosition=true)
+    4. TAKE_PROFIT_MARKET (ccxt → /fapi/v1/algoOrder, algoType=CONDITIONAL)
+    5. STOP_MARKET        (ccxt → /fapi/v1/algoOrder, algoType=CONDITIONAL)
     * TP/SL 실패 시 → 즉시 긴급 청산 후 False 반환
 
     반환: 성공 True / 실패 False
@@ -195,22 +200,22 @@ def execute_order(sig: dict) -> bool:
         entry_order_id = entry_order.get("id", "N/A")
         logger.info(f"[ORDER] 진입 주문 체결: {entry_order_id}")
 
-        # 4. TAKE_PROFIT_MARKET — fapiPrivatePostOrder 직접 호출 (v2.12)
-        #    quantity 파라미터 완전 제거 → -4120 해결
+        # 4. TAKE_PROFIT_MARKET — Algo Order API (v2.13, ccxt 4.5.43+)
+        #    triggerPrice 파라미터 → 자동으로 /fapi/v1/algoOrder 라우팅
         try:
-            tp_resp = _place_close_order(symbol, "TAKE_PROFIT_MARKET", tp)
-            tp_id   = tp_resp.get("orderId", "N/A")
-            logger.info(f"[ORDER] TP 주문 등록: {tp_id} @ {tp:.4f}")
+            tp_resp = _place_algo_order(symbol, "TAKE_PROFIT_MARKET", tp, amount)
+            tp_id   = tp_resp.get("id", tp_resp.get("algoId", "N/A"))
+            logger.info(f"[ORDER] TP 주문 등록 (algoOrder): {tp_id} @ {tp:.4f}")
         except Exception as e:
             logger.error(f"[ORDER] TP 등록 실패 → 긴급 청산 실행: {e}")
             _emergency_close(symbol, amount)
             return False
 
-        # 5. STOP_MARKET — fapiPrivatePostOrder 직접 호출 (v2.12)
+        # 5. STOP_MARKET — Algo Order API (v2.13, ccxt 4.5.43+)
         try:
-            sl_resp = _place_close_order(symbol, "STOP_MARKET", sl)
-            sl_id   = sl_resp.get("orderId", "N/A")
-            logger.info(f"[ORDER] SL 주문 등록: {sl_id} @ {sl:.4f}")
+            sl_resp = _place_algo_order(symbol, "STOP_MARKET", sl, amount)
+            sl_id   = sl_resp.get("id", sl_resp.get("algoId", "N/A"))
+            logger.info(f"[ORDER] SL 주문 등록 (algoOrder): {sl_id} @ {sl:.4f}")
         except Exception as e:
             logger.error(f"[ORDER] SL 등록 실패 → 긴급 청산 실행: {e}")
             _emergency_close(symbol, amount)
@@ -250,7 +255,7 @@ def cancel_all_open_orders(symbol: str) -> None:
 
 
 def close_position_market(symbol: str, size: float) -> None:
-    """시장가 강제 청산 (24봉 초과 포지션)"""
+    """시장가 강제 청산 (2시간 초과 포지션)"""
     size = _round_amount(symbol, size)
     if size <= 0:
         logger.warning(f"[ORDER] {symbol} 청산 수량 0 → 스킵")

@@ -1,4 +1,4 @@
-ccxt==4.3.72
+ccxt==4.5.43
 pandas>=2.2.2
 pandas_ta==0.4.67b0
 numpy>=1.26.4
