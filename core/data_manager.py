@@ -1,10 +1,11 @@
 """
-core/data_manager.py — ccxt OHLCV fetch + 캐시 (v2.2)
+core/data_manager.py — ccxt OHLCV fetch + 캐시 (v2.3)
 
 버그 수정:
-  - ccxt.binance(defaultType=future) → ccxt.binanceusdm()
-    Spot 클라이언트가 api.binance.com 호출 → 지역 차단 발생
-    binanceusdm은 fapi.binance.com 직접 호출 → 선물 전용 정상 동작
+  - ccxt.binanceusdm().fetch_balance() 내부에서 load_markets() 시
+    sapi/v1/capital/config/getall (Spot API) 호출 → 지역 차단
+  - get_balance()를 fapiPrivateGetBalance() 직접 호출로 변경
+    → fapi.binance.com만 사용, Spot API 완전 우회
 """
 
 import os
@@ -20,21 +21,18 @@ exchange = ccxt.binanceusdm({
     "apiKey":  os.getenv("BINANCE_API_KEY", ""),
     "secret":  os.getenv("BINANCE_API_SECRET", ""),
     "enableRateLimit": True,
+    "options": {
+        "defaultType": "future",
+        "fetchMarkets": ["linear"],   # futures 마켓만 로드
+    },
 })
 
-# ── 주문 실행용 exchange (order_manager에서 import) ───────────
-# binanceusdm은 set_leverage / create_order 모두 지원
-
 # ── 1루프 캐시 ───────────────────────────────────────────────
-_cache: dict = {}   # key: "SYMBOL_TF", value: (timestamp, DataFrame)
-CACHE_TTL_SEC = 55  # 55초 이내 재요청은 캐시 반환
+_cache: dict = {}
+CACHE_TTL_SEC = 55
 
 
 def fetch_ohlcv(symbol: str, timeframe: str, limit: int = 100) -> pd.DataFrame | None:
-    """
-    OHLCV 데이터 fetch. 캐시 히트 시 캐시 반환.
-    반환: columns = [timestamp, open, high, low, close, volume]
-    """
     key = f"{symbol}_{timeframe}"
     now = time.time()
 
@@ -52,23 +50,19 @@ def fetch_ohlcv(symbol: str, timeframe: str, limit: int = 100) -> pd.DataFrame |
         df = pd.DataFrame(raw, columns=["timestamp", "open", "high", "low", "close", "volume"])
         df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms")
         df = df.astype({"open": float, "high": float, "low": float, "close": float, "volume": float})
-
         _cache[key] = (now, df)
         return df
 
     except ccxt.NetworkError as e:
         logger.error(f"[DATA] 네트워크 오류 {key}: {e}")
-        return None
     except ccxt.ExchangeError as e:
         logger.error(f"[DATA] 거래소 오류 {key}: {e}")
-        return None
     except Exception as e:
         logger.error(f"[DATA] 알 수 없는 오류 {key}: {e}")
-        return None
+    return None
 
 
 def fetch_funding_rate(symbol: str) -> float:
-    """현재 펀딩비 반환"""
     try:
         info = exchange.fetch_funding_rate(symbol)
         return float(info.get("fundingRate", 0.0))
@@ -78,26 +72,30 @@ def fetch_funding_rate(symbol: str) -> float:
 
 
 def fetch_orderbook(symbol: str) -> dict | None:
-    """호가창 조회 (스프레드 계산용)"""
     try:
-        ob = exchange.fetch_order_book(symbol, limit=5)
-        return ob
+        return exchange.fetch_order_book(symbol, limit=5)
     except Exception as e:
         logger.warning(f"[DATA] 호가창 조회 실패 {symbol}: {e}")
         return None
 
 
 def get_balance() -> float:
-    """USDT 사용 가능 잔고 반환 (선물 지갑 free)"""
+    """
+    USDT 선물 잔고 직접 조회.
+    fapiPrivateGetBalance() → fapi.binance.com/fapi/v1/balance
+    fetch_balance() 대신 사용 → Spot sapi 엔드포인트 완전 우회
+    """
     try:
-        bal = exchange.fetch_balance()
-        usdt = bal.get("USDT", {})
-        return float(usdt.get("free", 0.0))
+        response = exchange.fapiPrivateGetBalance()
+        for asset in response:
+            if asset.get("asset") == "USDT":
+                return float(asset.get("availableBalance", 0.0))
+        logger.warning("[DATA] USDT 잔고 항목 없음")
+        return 0.0
     except Exception as e:
         logger.error(f"[DATA] 잔고 조회 실패: {e}")
         return 0.0
 
 
 def clear_cache() -> None:
-    """루프 시작 시 캐시 초기화"""
     _cache.clear()
