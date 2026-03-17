@@ -1,5 +1,5 @@
 """
-main.py — SMRA Bot 메인 루프 (v2.9)
+main.py — SMRA Bot 메인 루프 (v2.11)
 
 v2.6: 봉 마감 정각 동기화 (wait_for_candle_close)
 v2.7: 신호 TTL → 봉 경계 체크로 대체, 파일 기반 entry_time (v2.9)
@@ -14,6 +14,10 @@ v2.9:
          → 한 번이라도 execute_order 호출한 심볼은 이번 루프에서 재시도 금지
   [FIX] record_position_timeframe() → strategy_id 함께 저장 (v2.11 연계)
          → 24봉 강제청산 로그에 어떤 전략으로 진입했는지 표시
+v2.11:
+  [FIX] 1루프 1심볼 제한 break 제거 → 동일 루프 내 여러 심볼 동시 진입 허용
+         동일 심볼 2중 진입 차단은 executed_symbols set 으로 계속 유지
+  [FIX] 텔레그램 알림 side="LONG" 하드코딩 → direction 동적 처리 (LONG/SHORT 정확히 표시)
 """
 
 import time
@@ -218,19 +222,21 @@ def run_loop() -> None:
             # ✅ 진입 성공 → 타임프레임 + 진입시각 + 전략ID 파일 기록 (24봉 청산용)
             record_position_timeframe(symbol, timeframe, strategy_id)  # v2.9: strategy_id 추가
 
+            direction_label = top_sig.get("direction", "long").upper()   # v2.11: 동적 방향
             notify_entry(
                 strategy_id=strategy_id,
                 symbol=symbol,
-                side="LONG",
+                side=direction_label,
                 entry=entry,
                 tp=tp,
                 sl=sl,
                 leverage=top_sig["strategy"]["leverage"],
                 margin=top_sig["margin"],
             )
-            logger.info(f"[LOOP] ✅ 주문 완료: {strategy_id}")
+            logger.info(f"[LOOP] ✅ 주문 완료: {strategy_id} [{direction_label}]")
             order_placed = True
-            break
+            # [v2.11] break 제거: 1심볼당 1포지션 허용, 루프 당 여러 심볼 진입 가능
+            # (동일 심볼 중복은 executed_symbols set 으로 계속 차단)
         else:
             logger.error(f"[LOOP] ❌ 주문 실패: {strategy_id} → {symbol} 이번 루프 재시도 금지")
 
