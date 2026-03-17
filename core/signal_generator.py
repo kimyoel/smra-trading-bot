@@ -5,7 +5,7 @@ core/signal_generator.py — 전략별 3개 지표 AND 조건 → 신호 생성
 import pandas as pd
 from strategies.registry import STRATEGY_REGISTRY
 from strategies.indicators import INDICATOR_MAP, get_atr_value
-from core.data_manager import fetch_ohlcv
+from core.data_manager import fetch_ohlcv, fetch_ohlcv_parallel
 from utils.logger import get_logger
 
 logger = get_logger("signal_generator")
@@ -16,18 +16,19 @@ def generate_all_signals() -> list[dict]:
     13개 전략 전수 신호 계산.
     신호 발생 시 signal dict 반환, 미발생 시 리스트에서 제외.
 
-    반환 형식:
-    [
-      {
-        "strategy":    <전략 딕셔너리>,
-        "signal":      True,
-        "entry_price": float,
-        "atr":         float,
-      },
-      ...
-    ]
+    v2.5: 유니크 (symbol, timeframe) 조합 병렬 pre-fetch → 직렬 대기 제거
     """
     signals = []
+
+    # ── 병렬 pre-fetch: 유니크 조합 먼저 캐시 워밍 ──────────
+    unique_pairs = list({
+        (s["symbol"], s["timeframe"])
+        for s in STRATEGY_REGISTRY.values()
+    })
+    import time as _time
+    t0 = _time.time()
+    fetch_ohlcv_parallel(unique_pairs, limit=100)
+    logger.info(f"[SIGNAL] 병렬 pre-fetch {len(unique_pairs)}개 완료 ({_time.time()-t0:.2f}초)")
 
     for strategy_id, strategy in STRATEGY_REGISTRY.items():
         symbol    = strategy["symbol"]

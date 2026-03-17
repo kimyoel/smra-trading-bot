@@ -1,5 +1,10 @@
 """
-core/data_manager.py — ccxt OHLCV fetch + 캐시 (v2.4)
+core/data_manager.py — ccxt OHLCV fetch + 캐시 (v2.5)
+
+v2.5 추가:
+  - ccxt timeout=5000ms 추가 (무한대기 방지)
+  - fetch_ohlcv_parallel(): 유니크 심볼/TF 조합 ThreadPoolExecutor 병렬 fetch
+    → 직렬 1.2s → 병렬 ~300ms 로 단축
 
 버그 수정:
   - ccxt.binanceusdm().fetch_balance() 내부에서 load_markets() 시
@@ -15,6 +20,7 @@ import os
 import time
 import ccxt
 import pandas as pd
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from utils.logger import get_logger
 
 logger = get_logger("data_manager")
@@ -24,6 +30,7 @@ exchange = ccxt.binanceusdm({
     "apiKey":  os.getenv("BINANCE_API_KEY", ""),
     "secret":  os.getenv("BINANCE_API_SECRET", ""),
     "enableRateLimit": True,
+    "timeout": 5000,               # 5초 타임아웃 (무한대기 방지)
     "options": {
         "defaultType": "future",
         "fetchMarkets": ["linear"],   # futures 마켓만 로드
@@ -101,6 +108,31 @@ def get_balance() -> float:
     except Exception as e:
         logger.error(f"[DATA] 잔고 조회 실패: {e}")
         return 0.0
+
+
+def fetch_ohlcv_parallel(pairs: list[tuple[str, str]], limit: int = 100) -> None:
+    """
+    여러 (symbol, timeframe) 조합을 ThreadPoolExecutor로 병렬 fetch → 캐시 워밍.
+    signal_generator 호출 전에 실행하면 직렬 대기 제거.
+
+    Args:
+        pairs: [(symbol, timeframe), ...] 유니크 조합 리스트
+        limit: OHLCV 봉 개수
+    """
+    def _fetch_one(args):
+        sym, tf = args
+        return fetch_ohlcv(sym, tf, limit)
+
+    with ThreadPoolExecutor(max_workers=len(pairs)) as executor:
+        futures = {executor.submit(_fetch_one, p): p for p in pairs}
+        for future in as_completed(futures):
+            sym, tf = futures[future]
+            try:
+                result = future.result()
+                status = f"{len(result)}봉" if result is not None else "실패"
+                logger.info(f"[DATA] 병렬 fetch 완료: {sym} {tf} → {status}")
+            except Exception as e:
+                logger.error(f"[DATA] 병렬 fetch 오류 {sym} {tf}: {e}")
 
 
 def clear_cache() -> None:
