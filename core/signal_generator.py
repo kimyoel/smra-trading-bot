@@ -1,0 +1,74 @@
+"""
+core/signal_generator.py — 전략별 3개 지표 AND 조건 → 신호 생성
+"""
+
+import pandas as pd
+from strategies.registry import STRATEGY_REGISTRY
+from strategies.indicators import INDICATOR_MAP, get_atr_value
+from core.data_manager import fetch_ohlcv
+from utils.logger import get_logger
+
+logger = get_logger("signal_generator")
+
+
+def generate_all_signals() -> list[dict]:
+    """
+    13개 전략 전수 신호 계산.
+    신호 발생 시 signal dict 반환, 미발생 시 리스트에서 제외.
+
+    반환 형식:
+    [
+      {
+        "strategy":    <전략 딕셔너리>,
+        "signal":      True,
+        "entry_price": float,
+        "atr":         float,
+      },
+      ...
+    ]
+    """
+    signals = []
+
+    for strategy_id, strategy in STRATEGY_REGISTRY.items():
+        symbol    = strategy["symbol"]
+        timeframe = strategy["timeframe"]
+
+        # OHLCV 데이터 fetch
+        df = fetch_ohlcv(symbol, timeframe, limit=100)
+        if df is None or len(df) < 30:
+            logger.warning(f"[SIGNAL] {strategy_id} — 데이터 부족, 스킵")
+            continue
+
+        # 3개 지표 AND 조건 체크
+        indicators = strategy["indicators"]
+        results = []
+        for ind_name in indicators:
+            fn = INDICATOR_MAP.get(ind_name)
+            if fn is None:
+                logger.warning(f"[SIGNAL] {strategy_id} — 지표 '{ind_name}' 미정의")
+                results.append(False)
+                continue
+            try:
+                result = fn(df)
+                results.append(result)
+            except Exception as e:
+                logger.error(f"[SIGNAL] {strategy_id} {ind_name} 계산 오류: {e}")
+                results.append(False)
+
+        # 3개 모두 True여야 신호
+        if not all(results):
+            continue
+
+        entry_price = float(df["close"].iloc[-1])
+        atr         = get_atr_value(df)
+
+        logger.info(f"[SIGNAL] ✅ {strategy_id} 신호 발생 | 진입가: {entry_price:.4f}")
+
+        signals.append({
+            "strategy":    strategy,
+            "signal":      True,
+            "entry_price": entry_price,
+            "atr":         atr,
+        })
+
+    return signals
