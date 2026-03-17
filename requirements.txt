@@ -1,6 +1,6 @@
 ccxt==4.3.72
-pandas==2.2.2
+pandas>=2.2.2
 pandas_ta==0.4.67b0
-numpy==1.26.4
+numpy>=1.26.4
 requests==2.31.0
 python-dotenv==1.0.1
