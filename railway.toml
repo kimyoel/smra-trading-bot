@@ -5,3 +5,4 @@ dockerfilePath = "Dockerfile"
 [deploy]
 restartPolicyType = "always"
 restartPolicyMaxRetries = 10
+region = "asia-southeast1"
