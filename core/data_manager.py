@@ -91,22 +91,24 @@ def fetch_orderbook(symbol: str) -> dict | None:
 
 def get_balance() -> tuple[float, float]:
     """
-    USDT 선물 잔고 직접 조회. (v2: total + free 동시 반환)
+    USDT 선물 잔고 직접 조회. (v2.1: 필드명 수정)
     fapiPrivateV2GetBalance() → fapi.binance.com/fapi/v2/balance
+
+    Binance /fapi/v2/balance 실제 응답 필드명:
+        "balance"          → 총 지갑 잔고 (walletBalance라고 착각하기 쉬움)
+        "availableBalance" → 여유 잔고
+        ※ "walletBalance" 필드는 존재하지 않음 → 0.0 반환 버그의 원인
 
     Returns:
         (total, free) 튜플
-        - total = walletBalance   : 총 자본 (포지션에 묶인 마진 포함, 미실현PnL 제외)
+        - total = balance         : 총 자본 (포지션 마진 포함, 미실현PnL 제외)
         - free  = availableBalance: 현재 사용 가능한 여유 잔고
-
-    [v2 FIX] 이전 버전은 availableBalance만 반환 → 포지션 진입 후 여유잔고가 줄어
-             배분 마진도 같이 줄어드는 버그 발생. total 기준으로 배분해야 함.
     """
     try:
         response = exchange.fapiPrivateV2GetBalance()
         for asset in response:
             if asset.get("asset") == "USDT":
-                total = float(asset.get("walletBalance",    0.0))
+                total = float(asset.get("balance",          0.0))  # ← 올바른 필드명
                 free  = float(asset.get("availableBalance", 0.0))
                 logger.info(f"[DATA] 잔고 조회 성공: total={total:.2f} USDT / free={free:.2f} USDT")
                 return total, free
