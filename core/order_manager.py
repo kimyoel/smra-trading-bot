@@ -576,3 +576,34 @@ def update_atr_tp_sl(open_positions: dict) -> None:
                 f"[ATR-UPDATE] {symbol} SL 재등록 실패 → 긴급 청산 실행: {e}"
             )
             _emergency_close(symbol, size_rounded, direction)
+
+
+def fetch_realized_pnl(symbol: str, after_ts: float = 0) -> float:
+    """
+    [v2.17] 심볼의 실현 PnL 조회 (Binance Income API 사용).
+
+    TP/SL 체결 또는 강제 청산 이후 실제 손익을 가져오기 위해 사용.
+    after_ts: 이 Unix 타임스탬프(초) 이후 발생한 PnL만 합산.
+    반환: 실현 PnL 합계 (USDT), 조회 실패 시 0.0.
+    """
+    raw = _to_raw_symbol(symbol)
+    try:
+        params: dict = {
+            "symbol":     raw,
+            "incomeType": "REALIZED_PNL",
+            "limit":      20,
+        }
+        if after_ts and after_ts > 0:
+            params["startTime"] = int(after_ts * 1000)  # ms 단위
+
+        resp = exchange.fapiPrivateGetIncome(params)
+        if not isinstance(resp, list):
+            logger.warning(f"[PNL] {symbol} income API 응답 형식 이상: {type(resp)}")
+            return 0.0
+
+        total = sum(float(r.get("income", 0)) for r in resp if isinstance(r, dict))
+        logger.info(f"[PNL] {symbol} 실현 PnL 조회: {total:+.4f} USDT ({len(resp)}건)")
+        return round(total, 4)
+    except Exception as e:
+        logger.warning(f"[PNL] {symbol} 실현 PnL 조회 실패: {e}")
+        return 0.0

@@ -1,5 +1,5 @@
 """
-main.py — SMRA Bot 메인 루프 (v2.11)
+main.py — SMRA Bot 메인 루프 (v2.12)
 
 v2.6: 봉 마감 정각 동기화 (wait_for_candle_close)
 v2.7: 신호 TTL → 봉 경계 체크로 대체, 파일 기반 entry_time (v2.9)
@@ -18,6 +18,12 @@ v2.11:
   [FIX] 1루프 1심볼 제한 break 제거 → 동일 루프 내 여러 심볼 동시 진입 허용
          동일 심볼 2중 진입 차단은 executed_symbols set 으로 계속 유지
   [FIX] 텔레그램 알림 side="LONG" 하드코딩 → direction 동적 처리 (LONG/SHORT 정확히 표시)
+v2.12:
+  [FIX] 익절/손절 텔레그램 알림 누락 수정
+         - TP/SL Algo Order 체결 시 포지션 소멸을 다음 루프에서 감지
+         - _prev_open_positions 모듈 변수로 루프 간 포지션 상태 추적
+         - fetch_realized_pnl() 로 Binance Income API 실현 PnL 조회 후 notify_close() 발송
+         - 24봉 강제청산 시: unrealized_pnl 기반 즉시 notify_close() 발송 + _prev에서 제거(중복 방지)
 """
 
 import time
@@ -31,13 +37,13 @@ from core.signal_arbiter import arbitrate
 from core.position_manager import (
     get_open_positions, get_position_age_bars, record_position_timeframe
 )
-from core.order_manager import execute_order, cancel_all_open_orders, close_position_market, update_atr_tp_sl
+from core.order_manager import execute_order, cancel_all_open_orders, close_position_market, update_atr_tp_sl, fetch_realized_pnl
 from core.risk_manager import (
     check_circuit_breaker, increment_api_error, reset_api_error,
     update_strategy_mdd
 )
 from utils.logger import get_logger
-from utils.notifier import notify_entry, notify_error, notify_circuit_breaker
+from utils.notifier import notify_entry, notify_close, notify_error, notify_circuit_breaker
 
 logger = get_logger("main")
 
@@ -47,6 +53,9 @@ TF_HOURS = {"5m": 2.0, "15m": 6.0, "1h": 24.0}
 # 봉 마감 동기화 설정
 CANDLE_TF_SEC = 5 * 60   # 기준: 5분봉 (300초)
 CANDLE_OFFSET = 3        # 봉 마감 후 3초 뒤 실행 (데이터 확정 여유)
+
+# [v2.12] 루프 간 포지션 상태 추적 (청산 감지용)
+_prev_open_positions: dict = {}
 
 
 def wait_for_candle_close() -> None:
@@ -73,6 +82,7 @@ def _current_candle_id() -> int:
 
 def run_loop() -> None:
     """단일 루프 실행"""
+    global _prev_open_positions   # [v2.12] 루프 간 포지션 상태 추적
     candle_id_at_start = _current_candle_id()   # v2.7: 봉 경계 추적
     logger.info("=" * 60)
     logger.info("[LOOP] 루프 시작")
@@ -94,6 +104,18 @@ def run_loop() -> None:
     open_positions = get_open_positions()
     logger.info(f"[LOOP] 보유 포지션: {list(open_positions.keys()) or '없음'}")
 
+    # ── 3-1. [v2.12] 청산 감지 — TP/SL Algo Order 체결 알림 ─
+    # 이전 루프에 있던 포지션이 이번 루프에 없으면 Binance가 자동 청산한 것
+    _force_closed_this_loop: set = set()  # 24봉 강제청산 심볼 (중복 알림 방지)
+    for sym, prev_info in _prev_open_positions.items():
+        if sym not in open_positions:
+            strat_id   = prev_info.get("strategy_id", "UNKNOWN")
+            entry_time = prev_info.get("entry_time", 0)
+            pnl        = fetch_realized_pnl(sym, entry_time)
+            result_lbl = "✅ 익절" if pnl > 0 else "❌ 손절"
+            notify_close(strat_id, sym, result_lbl, pnl)
+            logger.info(f"[LOOP] {sym} 청산 감지 (TP/SL) → 텔레그램 알림 (PnL={pnl:+.4f})")
+
     # ── 4. 24봉 초과 포지션 강제 청산 ────────────────────────
     for symbol, pos_info in list(open_positions.items()):
         tf        = pos_info.get("timeframe", "1h")
@@ -112,6 +134,13 @@ def run_loop() -> None:
             cancel_all_open_orders(symbol)          # 일반 + Algo Order 동시 취소
             pos_side = pos_info.get("side", "long")  # [v2.9] Binance에서 조회한 포지션 방향
             close_position_market(symbol, pos_side=pos_side)  # v2.15: 방향 전달
+
+            # [v2.12] 강제청산 즉시 텔레그램 알림 (unrealized_pnl 기준)
+            force_pnl   = float(pos_info.get("unrealized_pnl", 0.0))
+            strat_id    = pos_info.get("strategy_id", "UNKNOWN")
+            result_lbl  = "✅ 익절" if force_pnl > 0 else "❌ 손절"
+            notify_close(strat_id, symbol, f"⏰ 24봉 강제청산 ({result_lbl})", force_pnl)
+            _force_closed_this_loop.add(symbol)  # 다음 루프 중복 방지용 마킹
 
     # ── 4-1. [v2.10] ATR 전략 TP/SL 매 봉 갱신 ──────────────
     # ATR 기반 전략은 매 봉(5m/15m/1h)마다 최신 ATR로 TP/SL 재계산 후 Algo Order 재등록
@@ -242,6 +271,13 @@ def run_loop() -> None:
 
     if not order_placed:
         logger.info("[LOOP] 모든 신호 시도 완료 (주문 없음)")
+
+    # ── [v2.12] 루프 끝: 현재 포지션 스냅샷 저장 ────────────────
+    # 강제청산 심볼은 이미 알림 발송 되었으므로 prev에서 제거
+    current_snapshot = dict(open_positions)
+    for sym in _force_closed_this_loop:
+        current_snapshot.pop(sym, None)
+    _prev_open_positions = current_snapshot
 
 
 def main() -> None:
