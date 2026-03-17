@@ -27,7 +27,7 @@ from core.signal_arbiter import arbitrate
 from core.position_manager import (
     get_open_positions, get_position_age_bars, record_position_timeframe
 )
-from core.order_manager import execute_order, cancel_all_open_orders, close_position_market
+from core.order_manager import execute_order, cancel_all_open_orders, close_position_market, update_atr_tp_sl
 from core.risk_manager import (
     check_circuit_breaker, increment_api_error, reset_api_error,
     update_strategy_mdd
@@ -108,6 +108,12 @@ def run_loop() -> None:
             cancel_all_open_orders(symbol)          # 일반 + Algo Order 동시 취소
             pos_side = pos_info.get("side", "long")  # [v2.9] Binance에서 조회한 포지션 방향
             close_position_market(symbol, pos_side=pos_side)  # v2.15: 방향 전달
+
+    # ── 4-1. [v2.10] ATR 전략 TP/SL 매 봉 갱신 ──────────────
+    # ATR 기반 전략은 매 봉(5m/15m/1h)마다 최신 ATR로 TP/SL 재계산 후 Algo Order 재등록
+    # SL Ratchet: 손실 방향으로의 SL 이동 금지 (유리한 방향으로만 이동)
+    open_positions_after_close = get_open_positions()  # 강제청산 이후 갱신된 포지션
+    update_atr_tp_sl(open_positions_after_close)
 
     # ── 5. 신호 생성 ──────────────────────────────────────────
     try:

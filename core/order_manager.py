@@ -452,3 +452,127 @@ def close_position_market(symbol: str, size: float = 0.0, pos_side: str = "long"
         logger.info(f"[ORDER] {symbol} 강제 청산 완료 (size={size}, side={close_side})")
     except Exception as e:
         logger.error(f"[ORDER] 강제 청산 실패 {symbol}: {e}")
+
+
+def update_atr_tp_sl(open_positions: dict) -> None:
+    """
+    [v2.17] ATR 전략 포지션의 TP/SL을 매 봉 갱신.
+
+    호출 시점: main.py 루프에서 포지션 조회 + 강제청산 처리 직후, 신호 생성 전.
+
+    동작:
+      1. 보유 포지션 중 tp_type="atr" 전략만 선택
+      2. 해당 타임프레임의 최신 ATR 계산
+      3. entry price 기반 새 TP/SL 계산
+      4. SL Ratchet: SL은 유리한 방향으로만 이동
+           LONG  → 새 SL이 기존보다 낮아지면 기존 SL 유지 (손실 범위 확대 금지)
+           SHORT → 새 SL이 기존보다 높아지면 기존 SL 유지
+      5. 기존 Algo Order 전체 취소 → 새 TP/SL 재등록
+
+    Args:
+        open_positions: get_open_positions() 반환값
+                        {symbol: {entry, side, size, strategy_id, ...}}
+    """
+    from strategies.registry import STRATEGY_REGISTRY
+    from strategies.indicators import get_atr_value
+    from core.data_manager import fetch_ohlcv
+    from core.position_manager import get_open_algo_orders
+
+    for symbol, pos_info in open_positions.items():
+        strategy_id = pos_info.get("strategy_id", "")
+        if not strategy_id or strategy_id not in STRATEGY_REGISTRY:
+            logger.debug(f"[ATR-UPDATE] {symbol} strategy_id 없음 → 스킵")
+            continue
+
+        strategy = STRATEGY_REGISTRY[strategy_id]
+        if strategy.get("tp_type") != "atr":
+            continue  # fixed 전략은 갱신 불필요
+
+        entry     = float(pos_info.get("entry", 0.0))
+        direction = pos_info.get("side", "long")
+        size      = float(pos_info.get("size", 0.0))
+        tf        = strategy["timeframe"]
+        tp_mult   = strategy["tp_mult"]
+        sl_mult   = strategy["sl_mult"]
+
+        if entry <= 0 or size <= 0:
+            logger.warning(f"[ATR-UPDATE] {symbol} entry={entry} or size={size} 이상 → 스킵")
+            continue
+
+        # ── 1. 최신 ATR 조회 ─────────────────────────────────
+        df = fetch_ohlcv(symbol, tf, limit=50)
+        if df is None or len(df) < 14:
+            logger.warning(f"[ATR-UPDATE] {symbol} OHLCV 데이터 부족 → 스킵")
+            continue
+
+        current_atr = get_atr_value(df)
+        if current_atr <= 0:
+            logger.warning(f"[ATR-UPDATE] {symbol} ATR={current_atr} 비정상 → 스킵")
+            continue
+
+        # ── 2. 새 TP/SL 계산 ─────────────────────────────────
+        if direction == "long":
+            new_tp = entry + current_atr * tp_mult
+            new_sl = entry - current_atr * sl_mult
+        else:  # short
+            new_tp = entry - current_atr * tp_mult
+            new_sl = entry + current_atr * sl_mult
+
+        # ── 3. SL Ratchet — 기존 Algo Order에서 현재 SL 조회 ─
+        try:
+            existing_orders = get_open_algo_orders(symbol)
+            current_sl_price = None
+            for o in existing_orders:
+                if o.get("orderType") == "STOP_MARKET":
+                    current_sl_price = float(
+                        o.get("triggerPrice") or o.get("stopPrice") or 0
+                    )
+                    break
+
+            if current_sl_price and current_sl_price > 0:
+                if direction == "long" and new_sl < current_sl_price:
+                    logger.info(
+                        f"[ATR-UPDATE] {symbol} SL Ratchet 적용 (LONG): "
+                        f"새 SL {new_sl:.4f} < 기존 {current_sl_price:.4f} → 기존 유지"
+                    )
+                    new_sl = current_sl_price
+                elif direction == "short" and new_sl > current_sl_price:
+                    logger.info(
+                        f"[ATR-UPDATE] {symbol} SL Ratchet 적용 (SHORT): "
+                        f"새 SL {new_sl:.4f} > 기존 {current_sl_price:.4f} → 기존 유지"
+                    )
+                    new_sl = current_sl_price
+        except Exception as e:
+            logger.warning(f"[ATR-UPDATE] {symbol} 기존 SL 조회 실패 → Ratchet 스킵: {e}")
+
+        # ── 4. 기존 Algo Order 취소 ───────────────────────────
+        try:
+            cancel_all_open_orders(symbol)
+        except Exception as e:
+            logger.error(f"[ATR-UPDATE] {symbol} 기존 주문 취소 실패 → 재등록 중단: {e}")
+            continue
+
+        # ── 5. 새 TP/SL 재등록 ───────────────────────────────
+        size_rounded = _round_amount(symbol, size)
+        try:
+            tp_resp = _place_algo_order(symbol, "TAKE_PROFIT_MARKET", new_tp, size_rounded, direction)
+            tp_id   = tp_resp.get("id", tp_resp.get("algoId", "N/A"))
+            logger.info(
+                f"[ATR-UPDATE] {symbol} [{direction.upper()}] TP 재등록: "
+                f"{new_tp:.4f} (+{(new_tp/entry-1)*100:+.2f}%) | algoId={tp_id} | ATR={current_atr:.2f}"
+            )
+        except Exception as e:
+            logger.error(f"[ATR-UPDATE] {symbol} TP 재등록 실패: {e}")
+
+        try:
+            sl_resp = _place_algo_order(symbol, "STOP_MARKET", new_sl, size_rounded, direction)
+            sl_id   = sl_resp.get("id", sl_resp.get("algoId", "N/A"))
+            logger.info(
+                f"[ATR-UPDATE] {symbol} [{direction.upper()}] SL 재등록: "
+                f"{new_sl:.4f} ({(new_sl/entry-1)*100:+.2f}%) | algoId={sl_id}"
+            )
+        except Exception as e:
+            logger.error(
+                f"[ATR-UPDATE] {symbol} SL 재등록 실패 → 긴급 청산 실행: {e}"
+            )
+            _emergency_close(symbol, size_rounded, direction)
