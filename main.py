@@ -1,12 +1,16 @@
 """
-main.py — SMRA Bot 메인 루프 (v2.1 final)
+main.py — SMRA Bot 메인 루프 (v2.6)
 
-진입 성공 시 record_position_timeframe() 호출 추가
-→ position_manager가 타임프레임별 청산 시간 계산에 활용
+v2.6:
+  - 봉 마감 정각 동기화 추가 (wait_for_candle_close)
+    → 5분봉 정각 +3초에 루프 실행 보장
+    → 40초 딜레이 → 3초 이내로 단축
+  - 15m/1h 봉은 5분의 배수이므로 자동 커버
 """
 
 import time
 import traceback
+from datetime import datetime, timezone
 
 from config import LOOP_INTERVAL_SEC
 from core.data_manager import get_balance, clear_cache
@@ -27,6 +31,27 @@ logger = get_logger("main")
 
 # 백테스트 기준: max_hold_bars = 24봉 → 타임프레임별 시간
 TF_HOURS = {"5m": 2.0, "15m": 6.0, "1h": 24.0}
+
+# 봉 마감 동기화 설정
+CANDLE_TF_SEC   = 5 * 60   # 기준: 5분봉 (300초)
+CANDLE_OFFSET   = 3        # 봉 마감 후 3초 뒤 실행 (데이터 확정 여유)
+
+
+def wait_for_candle_close() -> None:
+    """
+    다음 5분봉 마감 후 CANDLE_OFFSET초에 맞춰 sleep.
+    5분봉 정각(00, 05, 10 ... 분)에 +3초 시점에 루프가 시작됨.
+    15분봉·1시간봉은 5분의 배수 → 자동으로 동기화됨.
+    """
+    now = time.time()
+    next_close = (int(now / CANDLE_TF_SEC) + 1) * CANDLE_TF_SEC
+    sleep_sec  = next_close + CANDLE_OFFSET - now
+    wake_utc   = datetime.fromtimestamp(next_close + CANDLE_OFFSET, tz=timezone.utc)
+    logger.info(
+        f"[LOOP] ⏱ 다음 5분봉 마감 대기: {sleep_sec:.1f}초 "
+        f"(기상 시각 {wake_utc.strftime('%H:%M:%S')} UTC)"
+    )
+    time.sleep(max(0, sleep_sec))
 
 
 def run_loop() -> None:
@@ -168,9 +193,8 @@ def main() -> None:
             notify_error(err_msg)
 
         elapsed = time.time() - start
-        sleep_t = max(0, LOOP_INTERVAL_SEC - elapsed)
-        logger.info(f"[LOOP] 완료 ({elapsed:.1f}초 소요) → {sleep_t:.1f}초 대기\n")
-        time.sleep(sleep_t)
+        logger.info(f"[LOOP] 완료 ({elapsed:.1f}초 소요)")
+        wait_for_candle_close()
 
 
 if __name__ == "__main__":
