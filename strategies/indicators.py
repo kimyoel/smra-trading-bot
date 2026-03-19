@@ -1,11 +1,13 @@
 """
-strategies/indicators.py — pandas_ta 래퍼  (v2.1)
+strategies/indicators.py — pandas_ta 래퍼  (v3.0)
 각 지표 계산 함수. DataFrame을 받아 "long" / "short" / False 반환.
 
-[v2.1] 롱/숏 양방향 신호 지원
-  - 이전: True(롱 조건 충족) / False
-  - 이후: "long" / "short" / False(신호 없음)
-  - signal_generator에서 모든 지표 방향이 일치할 때만 신호 발생
+[v3.0] 백테스트 B등급 이상 검증 지표로 전면 교체
+  - 제거: RSI, PSAR, WILLR, ICHIMOKU, EMA, SMA (B+등급 미달)
+  - 유지+조정: OBV, CMF, VWAP, AROON, MOM, ROC, ADX, ATR_SIG, MFI, CCI
+  - 신규: AD(누적/분포선), STDDEV(표준편차)
+  - 임계값: 백테스트 indicators.py v3.8 기준에 맞춰 조정
+    (예: CMF 0.05→0.1, ADX 20→25, RSI 60/40→제거)
 """
 
 import pandas as pd
@@ -13,83 +15,54 @@ import pandas_ta as ta
 import numpy as np
 
 
-def calc_rsi(df: pd.DataFrame, period: int = 14):
-    """RSI > 60 → long, RSI < 40 → short"""
-    rsi = ta.rsi(df["close"], length=period)
-    if rsi is None or len(rsi) < period:
+# ═══════════════════════════════════════════════════════════════
+# 핵심 거래량 지표 (TOP50 등장 62회)
+# ═══════════════════════════════════════════════════════════════
+
+def calc_obv(df: pd.DataFrame):
+    """OBV > OBV_SMA(20) → long, OBV < OBV_SMA(20) → short
+    
+    백테스트 근거: TOP50에 20회 등장, S/A등급 핵심 구성요소
+    기존 v2.1과 동일 로직 (EMA20 → SMA20으로 변경하여 백테스트와 일치)
+    """
+    obv = ta.obv(df["close"], df["volume"])
+    if obv is None or len(obv) < 20:
         return False
-    val = float(rsi.iloc[-1])
-    if val > 60:
+    obv_sma = ta.sma(obv, length=20)
+    if obv_sma is None or len(obv_sma) < 20:
+        return False
+    obv_val = float(obv.iloc[-1])
+    sma_val = float(obv_sma.iloc[-1])
+    if obv_val > sma_val:
         return "long"
-    if val < 40:
+    if obv_val < sma_val:
         return "short"
     return False
 
 
-def calc_aroon(df: pd.DataFrame, period: int = 25):
-    """Aroon_Up > Aroon_Down AND Up > 70 → long
-       Aroon_Down > Aroon_Up AND Down > 70 → short"""
-    aroon = ta.aroon(df["high"], df["low"], length=period)
-    if aroon is None or aroon.empty:
+def calc_cmf(df: pd.DataFrame, period: int = 20):
+    """CMF(20) > +0.1 → long, CMF(20) < -0.1 → short
+    
+    백테스트 근거: TOP50에 11회 등장, A등급 ETH 1h SHORT(OOS 0.8668)
+    임계값: 0.05 → 0.1 (백테스트 검증값, 더 강한 신호만 취급)
+    """
+    cmf = ta.cmf(df["high"], df["low"], df["close"], df["volume"], length=period)
+    if cmf is None or len(cmf) < period:
         return False
-    up   = float(aroon[f"AROONU_{period}"].iloc[-1])
-    down = float(aroon[f"AROOND_{period}"].iloc[-1])
-    if up > down and up > 70:
+    val = float(cmf.iloc[-1])
+    if val > 0.1:
         return "long"
-    if down > up and down > 70:
-        return "short"
-    return False
-
-
-def calc_mfi(df: pd.DataFrame, period: int = 14):
-    """MFI > 60 → long, MFI < 40 → short"""
-    mfi = ta.mfi(df["high"], df["low"], df["close"], df["volume"], length=period)
-    if mfi is None or len(mfi) < period:
-        return False
-    val = float(mfi.iloc[-1])
-    if val > 60:
-        return "long"
-    if val < 40:
-        return "short"
-    return False
-
-
-def calc_psar(df: pd.DataFrame, af0: float = 0.02, af: float = 0.02, max_af: float = 0.2):
-    """가격 > PSAR → long (상향 전환)
-       가격 < PSAR → short (하향 전환)"""
-    psar = ta.psar(df["high"], df["low"], df["close"], af0=af0, af=af, max_af=max_af)
-    if psar is None or psar.empty:
-        return False
-    # PSARl = long signal (price above PSAR), PSARs = short signal
-    long_col  = [c for c in psar.columns if "PSARl" in c]
-    short_col = [c for c in psar.columns if "PSARs" in c]
-    close = float(df["close"].iloc[-1])
-    if long_col:
-        psar_long = psar[long_col[0]].iloc[-1]
-        if not pd.isna(psar_long) and close > float(psar_long):
-            return "long"
-    if short_col:
-        psar_short = psar[short_col[0]].iloc[-1]
-        if not pd.isna(psar_short) and close < float(psar_short):
-            return "short"
-    return False
-
-
-def calc_willr(df: pd.DataFrame, period: int = 14):
-    """WILLR > -30 → long (과매수 진입), WILLR < -70 → short (과매도 반전)"""
-    willr = ta.willr(df["high"], df["low"], df["close"], length=period)
-    if willr is None or len(willr) < period:
-        return False
-    val = float(willr.iloc[-1])
-    if val > -30:
-        return "long"
-    if val < -70:
+    if val < -0.1:
         return "short"
     return False
 
 
 def calc_vwap(df: pd.DataFrame):
-    """가격 > VWAP → long, 가격 < VWAP → short"""
+    """Close > VWAP(20) → long, Close < VWAP(20) → short
+    
+    백테스트 근거: TOP50에 18회 등장, 최고 평균 OOS(0.6510)
+    S등급: ETH 1h LONG 2_OBV_VWAP (OOS 0.9442, 수익률 769%)
+    """
     vwap = ta.vwap(df["high"], df["low"], df["close"], df["volume"])
     if vwap is None or len(vwap) == 0:
         return False
@@ -102,116 +75,37 @@ def calc_vwap(df: pd.DataFrame):
     return False
 
 
-def calc_ichimoku(df: pd.DataFrame):
-    """가격 > Cloud AND Tenkan > Kijun → long
-       가격 < Cloud AND Tenkan < Kijun → short"""
-    ichi = ta.ichimoku(df["high"], df["low"], df["close"], tenkan=9, kijun=26, senkou=52)
-    if ichi is None or len(ichi) < 2:
+def calc_ad(df: pd.DataFrame):
+    """AD > AD_SMA(20) → long (매집 확대), AD < AD_SMA(20) → short (분산 확대)
+    
+    백테스트 근거: S등급 1위 — XRP 1h SHORT S_AD (OOS 0.9837, 수익률 943.59%)
+    TOP50에 13회 등장. 가격-거래량 괴리를 포착하여 숨겨진 매집/분산 감지
+    """
+    ad = ta.ad(df["high"], df["low"], df["close"], df["volume"])
+    if ad is None or len(ad) < 20:
         return False
-    spans = ichi[0]
-    if spans is None or spans.empty:
+    ad_sma = ta.sma(ad, length=20)
+    if ad_sma is None or len(ad_sma) < 20:
         return False
-    tenkan_col = [c for c in spans.columns if "ITS" in c]
-    kijun_col  = [c for c in spans.columns if "IKS" in c]
-    spanA_col  = [c for c in spans.columns if "ISA" in c]
-    spanB_col  = [c for c in spans.columns if "ISB" in c]
-    if not (tenkan_col and kijun_col and spanA_col and spanB_col):
-        return False
-    close   = float(df["close"].iloc[-1])
-    tenkan  = float(spans[tenkan_col[0]].iloc[-1])
-    kijun   = float(spans[kijun_col[0]].iloc[-1])
-    spanA   = float(spans[spanA_col[0]].iloc[-1])
-    spanB   = float(spans[spanB_col[0]].iloc[-1])
-    cloud_top = max(spanA, spanB)
-    cloud_bot = min(spanA, spanB)
-    if close > cloud_top and tenkan > kijun:
+    ad_val  = float(ad.iloc[-1])
+    sma_val = float(ad_sma.iloc[-1])
+    if ad_val > sma_val:
         return "long"
-    if close < cloud_bot and tenkan < kijun:
+    if ad_val < sma_val:
         return "short"
     return False
 
 
-def calc_ema(df: pd.DataFrame, period: int = 20):
-    """가격 > EMA20 → long, 가격 < EMA20 → short"""
-    ema = ta.ema(df["close"], length=period)
-    if ema is None or len(ema) < period:
-        return False
-    close   = float(df["close"].iloc[-1])
-    ema_val = float(ema.iloc[-1])
-    if close > ema_val:
-        return "long"
-    if close < ema_val:
-        return "short"
-    return False
-
-
-def calc_adx(df: pd.DataFrame, period: int = 14):
-    """ADX > 20 (추세 강도만 확인, DI+/DI- 로 방향 판단)
-       DI+ > DI- AND ADX > 20 → long
-       DI- > DI+ AND ADX > 20 → short"""
-    adx = ta.adx(df["high"], df["low"], df["close"], length=period)
-    if adx is None or adx.empty:
-        return False
-    adx_col  = [c for c in adx.columns if c.startswith("ADX_")]
-    dip_col  = [c for c in adx.columns if c.startswith("DMP_")]
-    dim_col  = [c for c in adx.columns if c.startswith("DMN_")]
-    if not (adx_col and dip_col and dim_col):
-        return False
-    adx_val = float(adx[adx_col[0]].iloc[-1])
-    dip_val = float(adx[dip_col[0]].iloc[-1])
-    dim_val = float(adx[dim_col[0]].iloc[-1])
-    if adx_val > 20 and dip_val > dim_val:
-        return "long"
-    if adx_val > 20 and dim_val > dip_val:
-        return "short"
-    return False
-
-
-def calc_obv(df: pd.DataFrame):
-    """OBV > OBV_EMA20 → long (자금 유입), OBV < OBV_EMA20 → short"""
-    obv = ta.obv(df["close"], df["volume"])
-    if obv is None or len(obv) < 20:
-        return False
-    obv_ema = ta.ema(obv, length=20)
-    if obv_ema is None or len(obv_ema) < 20:
-        return False
-    obv_val = float(obv.iloc[-1])
-    ema_val = float(obv_ema.iloc[-1])
-    if obv_val > ema_val:
-        return "long"
-    if obv_val < ema_val:
-        return "short"
-    return False
-
-
-def calc_cmf(df: pd.DataFrame, period: int = 20):
-    """CMF > 0.05 → long, CMF < -0.05 → short"""
-    cmf = ta.cmf(df["high"], df["low"], df["close"], df["volume"], length=period)
-    if cmf is None or len(cmf) < period:
-        return False
-    val = float(cmf.iloc[-1])
-    if val > 0.05:
-        return "long"
-    if val < -0.05:
-        return "short"
-    return False
-
-
-def calc_roc(df: pd.DataFrame, period: int = 12):
-    """ROC > 0.5 → long, ROC < -0.5 → short"""
-    roc = ta.roc(df["close"], length=period)
-    if roc is None or len(roc) < period:
-        return False
-    val = float(roc.iloc[-1])
-    if val > 0.5:
-        return "long"
-    if val < -0.5:
-        return "short"
-    return False
-
+# ═══════════════════════════════════════════════════════════════
+# 모멘텀 지표
+# ═══════════════════════════════════════════════════════════════
 
 def calc_mom(df: pd.DataFrame, period: int = 10):
-    """MOM > 0 → long, MOM < 0 → short"""
+    """MOM(10) > 0 → long, MOM(10) < 0 → short
+    
+    백테스트 근거: A등급 BTC 1h LONG S_MOM (OOS 0.8871, 수익률 329%)
+    TOP50에 8회 등장. 단순하지만 과적합 위험 최소
+    """
     mom = ta.mom(df["close"], length=period)
     if mom is None or len(mom) < period:
         return False
@@ -223,27 +117,164 @@ def calc_mom(df: pd.DataFrame, period: int = 10):
     return False
 
 
+def calc_roc(df: pd.DataFrame, period: int = 10):
+    """ROC(10) > 0% → long, ROC(10) < 0% → short
+    
+    백테스트 근거: A등급 BTC 1h LONG S_ROC (OOS 0.8871, 수익률 329%)
+    MOM의 비율 버전. period=12→10 (백테스트 기준과 일치)
+    임계값: 0.5→0 (백테스트에서 0% 기준이 더 좋은 성과)
+    """
+    roc = ta.roc(df["close"], length=period)
+    if roc is None or len(roc) < period:
+        return False
+    val = float(roc.iloc[-1])
+    if val > 0:
+        return "long"
+    if val < 0:
+        return "short"
+    return False
+
+
+# ═══════════════════════════════════════════════════════════════
+# 보조 신호 지표
+# ═══════════════════════════════════════════════════════════════
+
+def calc_aroon(df: pd.DataFrame, period: int = 25):
+    """AroonUp(25) > 70 → long, AroonDown(25) > 70 → short
+    
+    백테스트 근거: A등급 BTC 15m LONG 3_CMF_AROON_ADX (OOS 0.8795)
+    TOP50에 5회 등장. 추세 시작/종료 시점 포착
+    """
+    aroon = ta.aroon(df["high"], df["low"], length=period)
+    if aroon is None or aroon.empty:
+        return False
+    up   = float(aroon[f"AROONU_{period}"].iloc[-1])
+    down = float(aroon[f"AROOND_{period}"].iloc[-1])
+    if up > down and up > 70:
+        return "long"
+    if down > up and down > 70:
+        return "short"
+    return False
+
+
+def calc_cci(df: pd.DataFrame, period: int = 20):
+    """CCI(20) < -100 → long (과매도 반등), CCI(20) > +100 → short (과매수 반락)
+    
+    백테스트 근거: A등급 XRP 15m SHORT 2_CMF_CCI (OOS 0.8206)
+    B등급 다수. 평균 대비 가격 위치를 표준화하여 극단적 이탈 감지
+    """
+    cci = ta.cci(df["high"], df["low"], df["close"], length=period)
+    if cci is None or len(cci) < period:
+        return False
+    val = float(cci.iloc[-1])
+    if val < -100:
+        return "long"
+    if val > 100:
+        return "short"
+    return False
+
+
+def calc_mfi(df: pd.DataFrame, period: int = 14):
+    """MFI(14) < 20 → long (과매도), MFI(14) > 80 → short (과매수)
+    
+    백테스트 근거: B등급 XRP 1h LONG S_MFI (OOS 0.7864)
+    임계값: 60/40 → 80/20 (백테스트 검증값, 극단치만 취급)
+    """
+    mfi = ta.mfi(df["high"], df["low"], df["close"], df["volume"], length=period)
+    if mfi is None or len(mfi) < period:
+        return False
+    val = float(mfi.iloc[-1])
+    if val < 20:
+        return "long"
+    if val > 80:
+        return "short"
+    return False
+
+
+def calc_stddev(df: pd.DataFrame, period: int = 20):
+    """STDDEV 팽창 & Close > SMA20 → long, STDDEV 팽창 & Close < SMA20 → short
+    
+    백테스트 근거: S등급 BTC 15m LONG 3_STDDEV_AD_ADX (OOS 0.9017, 수익률 300.87%)
+    변동성 팽창 구간 + 추세 방향 결합. 스퀴즈 후 폭발 움직임 감지
+    """
+    stdev = ta.stdev(df["close"], length=period)
+    if stdev is None or len(stdev) < period + 10:
+        return False
+    sma20 = ta.sma(df["close"], length=period)
+    if sma20 is None or len(sma20) < period:
+        return False
+    # STDDEV의 EMA(20)로 팽창 여부 판단
+    stdev_ema = ta.ema(stdev, length=period)
+    if stdev_ema is None or len(stdev_ema) < period:
+        return False
+    
+    current_std = float(stdev.iloc[-1])
+    std_ema_val = float(stdev_ema.iloc[-1])
+    close       = float(df["close"].iloc[-1])
+    sma_val     = float(sma20.iloc[-1])
+    
+    # 변동성 팽창 조건: 현재 STDDEV > STDDEV의 EMA20
+    if current_std > std_ema_val:
+        if close > sma_val:
+            return "long"
+        if close < sma_val:
+            return "short"
+    return False
+
+
+# ═══════════════════════════════════════════════════════════════
+# 필터 지표 (추세 강도 / 변동성 활성 확인)
+# ═══════════════════════════════════════════════════════════════
+
+def calc_adx(df: pd.DataFrame, period: int = 14):
+    """ADX(14) > 25 & DI+>DI- → long, ADX(14) > 25 & DI->DI+ → short
+    
+    백테스트 근거: S등급 BTC 1h LONG S_ADX (OOS 0.9110, 수익률 430%)
+    TOP50에 13회 등장. 추세강도 확인 + DI 방향으로 진입 방향 결정
+    임계값: 20→25 (백테스트 기준)
+    """
+    adx = ta.adx(df["high"], df["low"], df["close"], length=period)
+    if adx is None or adx.empty:
+        return False
+    adx_col  = [c for c in adx.columns if c.startswith("ADX_")]
+    dip_col  = [c for c in adx.columns if c.startswith("DMP_")]
+    dim_col  = [c for c in adx.columns if c.startswith("DMN_")]
+    if not (adx_col and dip_col and dim_col):
+        return False
+    adx_val = float(adx[adx_col[0]].iloc[-1])
+    dip_val = float(adx[dip_col[0]].iloc[-1])
+    dim_val = float(adx[dim_col[0]].iloc[-1])
+    if adx_val > 25 and dip_val > dim_val:
+        return "long"
+    if adx_val > 25 and dim_val > dip_val:
+        return "short"
+    return False
+
+
 def calc_atr_sig(df: pd.DataFrame, period: int = 14):
-    """ATR 상승 + EMA 방향으로 롱/숏 결정
-       ATR 상승 AND 가격 > EMA20 → long
-       ATR 상승 AND 가격 < EMA20 → short"""
+    """ATR(14) > ATR_SMA(20) → 변동성 활성, 가격 방향으로 롱/숏 결정
+    
+    백테스트 근거: A등급 BTC 15m LONG 3_AROON_AD_ATR_SIG (OOS 0.8847)
+    B등급 다수 등장. ATR 상승 + 가격 vs SMA20 방향으로 진입
+    """
     atr = ta.atr(df["high"], df["low"], df["close"], length=period)
-    if atr is None or len(atr) < period + 1:
+    if atr is None or len(atr) < 21:
         return False
-    atr_rising = float(atr.iloc[-1]) > float(atr.iloc[-2])
-    if not atr_rising:
+    atr_sma = ta.sma(atr, length=20)
+    if atr_sma is None or len(atr_sma) < 20:
         return False
-    ema_dir = calc_ema(df, period=20)
-    return ema_dir  # "long" / "short" / False
-
-
-def calc_sma(df: pd.DataFrame, period: int = 20):
-    """가격 > SMA20 → long, 가격 < SMA20 → short"""
-    sma = ta.sma(df["close"], length=period)
-    if sma is None or len(sma) < period:
+    atr_val     = float(atr.iloc[-1])
+    atr_sma_val = float(atr_sma.iloc[-1])
+    
+    if atr_val <= atr_sma_val:
+        return False   # 변동성 비활성 → 신호 없음
+    
+    # 방향 결정: Close vs SMA20
+    sma20 = ta.sma(df["close"], length=20)
+    if sma20 is None or len(sma20) < 20:
         return False
     close   = float(df["close"].iloc[-1])
-    sma_val = float(sma.iloc[-1])
+    sma_val = float(sma20.iloc[-1])
     if close > sma_val:
         return "long"
     if close < sma_val:
@@ -259,21 +290,24 @@ def get_atr_value(df: pd.DataFrame, period: int = 14) -> float:
     return float(atr.iloc[-1])
 
 
-# ── 지표 이름 → 함수 매핑 ────────────────────────────────────
+# ═══════════════════════════════════════════════════════════════
+# 지표 이름 → 함수 매핑
+# ═══════════════════════════════════════════════════════════════
 INDICATOR_MAP = {
-    "RSI":      calc_rsi,
-    "AROON":    calc_aroon,
-    "MFI":      calc_mfi,
-    "PSAR":     calc_psar,
-    "WILLR":    calc_willr,
-    "VWAP":     calc_vwap,
-    "ICHIMOKU": calc_ichimoku,
-    "EMA":      calc_ema,
-    "ADX":      calc_adx,
+    # 핵심 거래량 (62회/TOP50)
     "OBV":      calc_obv,
     "CMF":      calc_cmf,
-    "ROC":      calc_roc,
+    "VWAP":     calc_vwap,
+    "AD":       calc_ad,       # v3.0 신규
+    # 모멘텀
     "MOM":      calc_mom,
+    "ROC":      calc_roc,
+    # 보조
+    "AROON":    calc_aroon,
+    "CCI":      calc_cci,      # v3.0 신규
+    "MFI":      calc_mfi,
+    "STDDEV":   calc_stddev,   # v3.0 신규
+    # 필터
+    "ADX":      calc_adx,
     "ATR_SIG":  calc_atr_sig,
-    "SMA":      calc_sma,
 }

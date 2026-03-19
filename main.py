@@ -1,5 +1,5 @@
 """
-main.py — SMRA Bot 메인 루프 (v2.12)
+main.py — SMRA Bot 메인 루프 (v2.14)
 
 v2.6: 봉 마감 정각 동기화 (wait_for_candle_close)
 v2.7: 신호 TTL → 봉 경계 체크로 대체, 파일 기반 entry_time (v2.9)
@@ -24,6 +24,17 @@ v2.12:
          - _prev_open_positions 모듈 변수로 루프 간 포지션 상태 추적
          - fetch_realized_pnl() 로 Binance Income API 실현 PnL 조회 후 notify_close() 발송
          - 24봉 강제청산 시: unrealized_pnl 기반 즉시 notify_close() 발송 + _prev에서 제거(중복 방지)
+v2.14:
+  [FIX] 고정 24봉 강제청산 → 전략별 max_hold_bars 동적 적용
+         - registry.py의 max_hold_bars 필드 참조 (backtest_report_final.docx 기반)
+         - 16개 전략: 48봉, XRP_4h_SHORT_MOM: 16봉
+         - TF_HOURS 제거 → TF_BAR_HOURS로 교체 (1봉당 시간)
+         - 강제청산 기준: max_hold_bars x bar_hours
+v2.13:
+  [FIX] signal_arbiter v2.5 연계 — Sharpe 기반 심볼 충돌 해소
+         - arbiter에서 동일 심볼 → Sharpe 최고 1개만 반환
+         - executed_symbols는 2중 방어 (arbiter가 놓치는 케이스 안전장치)로 유지
+         - 전략별 최적 TP/SL 매칭: registry의 tp_mult/sl_mult → arbiter → order_manager 흐름 확인
 """
 
 import time
@@ -31,6 +42,7 @@ import traceback
 from datetime import datetime, timezone
 
 from config import LOOP_INTERVAL_SEC
+from strategies.registry import STRATEGY_REGISTRY
 from core.data_manager import get_balance, clear_cache
 from core.signal_generator import generate_all_signals
 from core.signal_arbiter import arbitrate
@@ -47,8 +59,9 @@ from utils.notifier import notify_entry, notify_close, notify_error, notify_circ
 
 logger = get_logger("main")
 
-# 백테스트 기준: max_hold_bars = 24봉 → 타임프레임별 시간
-TF_HOURS = {"5m": 2.0, "15m": 6.0, "1h": 24.0}
+# [v2.14] 타임프레임별 1봉당 시간 (강제청산 계산용)
+# max_hold_bars × TF_BAR_HOURS[tf] = 최대 보유 시간(h)
+TF_BAR_HOURS = {"5m": 1/12, "15m": 0.25, "1h": 1.0, "4h": 4.0}
 
 # 봉 마감 동기화 설정
 CANDLE_TF_SEC = 5 * 60   # 기준: 5분봉 (300초)
@@ -116,20 +129,26 @@ def run_loop() -> None:
             notify_close(strat_id, sym, result_lbl, pnl)
             logger.info(f"[LOOP] {sym} 청산 감지 (TP/SL) → 텔레그램 알림 (PnL={pnl:+.4f})")
 
-    # ── 4. 24봉 초과 포지션 강제 청산 ────────────────────────
+    # ── 4. max_hold_bars 초과 포지션 강제 청산 ────────────────
     for symbol, pos_info in list(open_positions.items()):
-        tf        = pos_info.get("timeframe", "1h")
-        max_hours = TF_HOURS.get(tf, 24.0)
-        age_h     = get_position_age_bars(symbol)   # 파일 기반 entry_time 사용
+        tf            = pos_info.get("timeframe", "1h")
+        strategy_id   = pos_info.get("strategy_id", "UNKNOWN")
+        bar_hours     = TF_BAR_HOURS.get(tf, 1.0)
+        age_h         = get_position_age_bars(symbol)   # 파일 기반 entry_time 사용
+
+        # [v2.14] 전략별 max_hold_bars 조회 (레지스트리에 없으면 48봉 기본값)
+        strat = STRATEGY_REGISTRY.get(strategy_id, {})
+        max_hold_bars = strat.get("max_hold_bars", 48)
+        max_hours     = max_hold_bars * bar_hours
 
         if age_h > max_hours:
             logger.warning(
                 f"[LOOP] {symbol} {age_h:.1f}h 초과 "
-                f"(기준: {max_hours}h = {tf} 24봉) → 강제 청산"
+                f"(기준: {max_hours:.1f}h = {tf} {max_hold_bars}봉) → 강제 청산"
             )
             notify_circuit_breaker(
                 "POSITION_TIMEOUT",
-                f"{symbol} {age_h:.1f}h 초과 → {tf} 24봉 기준 강제 청산"
+                f"{symbol} {age_h:.1f}h 초과 → {tf} {max_hold_bars}봉 기준 강제 청산 ({strategy_id})"
             )
             cancel_all_open_orders(symbol)          # 일반 + Algo Order 동시 취소
             pos_side = pos_info.get("side", "long")  # [v2.9] Binance에서 조회한 포지션 방향
@@ -139,7 +158,7 @@ def run_loop() -> None:
             force_pnl   = float(pos_info.get("unrealized_pnl", 0.0))
             strat_id    = pos_info.get("strategy_id", "UNKNOWN")
             result_lbl  = "✅ 익절" if force_pnl > 0 else "❌ 손절"
-            notify_close(strat_id, symbol, f"⏰ 24봉 강제청산 ({result_lbl})", force_pnl)
+            notify_close(strat_id, symbol, f"⏰ {max_hold_bars}봉 강제청산 ({result_lbl})", force_pnl)
             _force_closed_this_loop.add(symbol)  # 다음 루프 중복 방지용 마킹
 
     # ── 4-1. [v2.10] ATR 전략 TP/SL 매 봉 갱신 ──────────────
@@ -172,7 +191,10 @@ def run_loop() -> None:
 
     # ── 7. Sharpe 순 실행 (CB 발동 시 다음 신호 폴오버) ───────
     order_placed = False
-    executed_symbols: set = set()   # [v2.9] 이번 루프에서 execute_order 호출한 심볼 추적
+    # [v2.9] 이번 루프에서 execute_order 호출한 심볼 추적
+    # [v2.13] arbiter v2.5에서 Sharpe 기반 심볼 중복 제거 후 넘어오지만
+    #         2중 방어 유지 (arbiter→main 사이에 포지션 변경 가능성 대비)
+    executed_symbols: set = set()
 
     for top_sig in executable:
         strategy    = top_sig["strategy"]
@@ -281,8 +303,8 @@ def run_loop() -> None:
 
 
 def main() -> None:
-    logger.info("🚀 SMRA Bot v2.1 시작 (No-Phase Architecture)")
-    logger.info(f"루프 간격: {LOOP_INTERVAL_SEC}초 | 최대 보유: 24봉 기준 (5m=2h / 15m=6h / 1h=24h)")
+    logger.info("🚀 SMRA Bot v2.14 시작 (백테스트 검증 전략 + Sharpe 충돌 해소 + 전략별 MAX HOLD)")
+    logger.info(f"루프 간격: {LOOP_INTERVAL_SEC}초 | 최대 보유: 전략별 max_hold_bars (15m~4h)")
 
     while True:
         start = time.time()

@@ -1,5 +1,5 @@
 """
-core/signal_arbiter.py — 필터링 + Sharpe 정렬 (v2.4)
+core/signal_arbiter.py — 필터링 + Sharpe 정렬 + 심볼 충돌 해소 (v2.5)
 
 변경사항:
   v2.1: H코드 문자열 대신 strategy의 tp_type/tp_mult/sl_mult 직접 사용
@@ -24,6 +24,17 @@ core/signal_arbiter.py — 필터링 + Sharpe 정렬 (v2.4)
          - 수정: tp_move = abs((tp-entry)/entry*100) → 이익방향 관계없이 크기만 추출
          - LONG/SHORT 모두 오룰바른 순TP이익 기대수익 표시
          - 로그에 [LONG]/[SHORT] 라벨 추가
+  v2.5:
+  [FIX5] 전략별 최적 TP/SL 매칭 + Sharpe 기반 심볼 충돌 해소
+         - 각 전략은 registry에 백테스트 검증된 고유 tp_mult/sl_mult 보유
+           (예: BTC_1h_LONG_ADX → TP 5%/SL 1.5%, ETH_1h_SHORT_CMF → TP 3%/SL 2%)
+         - calc_tp_sl()이 strategy dict에서 직접 tp_mult/sl_mult를 읽어 사용
+         - 동일 심볼에 대해 여러 전략 신호가 동시 발생 시:
+           ① 모든 후보를 Sharpe 내림차순 정렬
+           ② 같은 심볼이면 Sharpe 가장 높은 1개만 선택 (나머지 스킵)
+           ③ 하위 전략은 SKIP-SHARPE-CONFLICT 로그와 함께 제외
+         - 이유: 1심볼 1포지션 규칙에서 Sharpe가 높은 전략이
+           백테스트 기준 위험 대비 수익이 더 높으므로 우선 실행
 """
 
 from config import MIN_NOTIONAL, CAPITAL_ALLOCATION
@@ -159,6 +170,8 @@ def arbitrate(signals: list, balance: float, open_positions: dict) -> list:
         entry       = sig["entry_price"]
         atr         = sig.get("atr")
         tp_type     = strategy.get("tp_type", "fixed")
+        tp_mult     = strategy.get("tp_mult", 0.010)
+        sl_mult     = strategy.get("sl_mult", 0.005)
 
         # ── 필터 1: 심볼 포지션 중복 ──────────────────────────
         if symbol in open_positions:
@@ -215,10 +228,12 @@ def arbitrate(signals: list, balance: float, open_positions: dict) -> list:
                 )
                 continue
 
-        # ── TP/SL 로그 ────────────────────────────────────────
+        # ── TP/SL 로그 (v2.5: 전략별 TP/SL 비율 명시) ──────────
         dir_label = "LONG" if is_long else "SHORT"
         logger.info(
-            f"[ARBITER] {strategy_id} [{dir_label}] TP={tp:.4f} ({(tp/entry-1)*100:+.2f}%) | "
+            f"[ARBITER] {strategy_id} [{dir_label}] | "
+            f"전략 TP/SL: {tp_mult*100:.1f}%/{sl_mult*100:.1f}% (백테스트 최적) | "
+            f"TP={tp:.4f} ({(tp/entry-1)*100:+.2f}%) | "
             f"SL={sl:.4f} ({(sl/entry-1)*100:+.2f}%)"
         )
 
@@ -236,15 +251,46 @@ def arbitrate(signals: list, balance: float, open_positions: dict) -> list:
             "direction": direction,   # v2.3: sig에서 전달받은 방향 보존
         })
 
-    # Sharpe 내림차순 정렬
+    # ── [v2.5] Sharpe 기반 심볼 충돌 해소 ──────────────────────
+    # 같은 심볼에 여러 전략 신호 → Sharpe 최고 1개만 선택
+    # 예: XRP/USDT에 XRP_1h_SHORT_AD (Sharpe 34.39) vs XRP_1h_SHORT_AD_2 (Sharpe 30.00)
+    #     → XRP_1h_SHORT_AD만 실행, XRP_1h_SHORT_AD_2는 제외
     executable.sort(key=lambda x: x["sharpe"], reverse=True)
 
-    if executable:
-        top = executable[0]
-        logger.info(
-            f"[ARBITER] 최종 실행 신호: {top['strategy']['id']} "
-            f"(Sharpe {top['sharpe']:.2f}) | "
-            f"TP {top['tp']:.4f} | SL {top['sl']:.4f}"
-        )
+    seen_symbols: dict = {}   # {symbol: strategy_id} — 심볼별 선택된 전략 추적
+    deduplicated = []
 
-    return executable
+    for sig in executable:
+        symbol      = sig["strategy"]["symbol"]
+        strategy_id = sig["strategy"]["id"]
+        sharpe      = sig["sharpe"]
+
+        if symbol in seen_symbols:
+            # 이미 더 높은 Sharpe 전략이 선택됨 → 이 전략은 제외
+            winner_id = seen_symbols[symbol]
+            logger.info(
+                f"[ARBITER] SKIP-SHARPE-CONFLICT | {strategy_id} (Sharpe {sharpe:.2f}) — "
+                f"{symbol} 이미 {winner_id} 선택됨 (더 높은 Sharpe)"
+            )
+            continue
+
+        seen_symbols[symbol] = strategy_id
+        deduplicated.append(sig)
+
+    if deduplicated:
+        top = deduplicated[0]
+        logger.info(
+            f"[ARBITER] 🏆 최종 실행 신호 {len(deduplicated)}개 (심볼 충돌 해소 후):"
+        )
+        for i, s in enumerate(deduplicated):
+            sid = s["strategy"]["id"]
+            logger.info(
+                f"[ARBITER]   #{i+1} {sid} [{s['direction'].upper()}] "
+                f"(Sharpe {s['sharpe']:.2f}) | "
+                f"TP {s['tp']:.4f} ({s['strategy']['tp_mult']*100:.1f}%) | "
+                f"SL {s['sl']:.4f} ({s['strategy']['sl_mult']*100:.1f}%)"
+            )
+    else:
+        logger.info("[ARBITER] 실행 가능 신호 없음 (필터링 후)")
+
+    return deduplicated
