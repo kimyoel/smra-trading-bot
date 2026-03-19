@@ -1,5 +1,5 @@
 """
-main.py — SMRA Bot 메인 루프 (v2.14)
+main.py — SMRA Bot 메인 루프 (v2.15)
 
 v2.6: 봉 마감 정각 동기화 (wait_for_candle_close)
 v2.7: 신호 TTL → 봉 경계 체크로 대체, 파일 기반 entry_time (v2.9)
@@ -24,6 +24,12 @@ v2.12:
          - _prev_open_positions 모듈 변수로 루프 간 포지션 상태 추적
          - fetch_realized_pnl() 로 Binance Income API 실현 PnL 조회 후 notify_close() 발송
          - 24봉 강제청산 시: unrealized_pnl 기반 즉시 notify_close() 발송 + _prev에서 제거(중복 방지)
+v2.15:
+  [FIX] 타임프레임별 봉 마감 동기화 (signal_generator v3.2 연계)
+         - 기존: 5분마다 17개 전략 전부 지표 조회 (불필요한 API 호출)
+         - 변경: 각 전략의 타임프레임 봉 마감 시점에만 해당 전략 평가
+           15m → 15분 정각, 1h → 정시, 4h → 4시간 정각
+         - 효과: API 호출량 ~75% 감소 (비마감 루프에서 1h/4h 전략 스킵)
 v2.14:
   [FIX] 고정 24봉 강제청산 → 전략별 max_hold_bars 동적 적용
          - registry.py의 max_hold_bars 필드 참조 (backtest_report_final.docx 기반)
@@ -303,8 +309,8 @@ def run_loop() -> None:
 
 
 def main() -> None:
-    logger.info("🚀 SMRA Bot v2.14 시작 (백테스트 검증 전략 + Sharpe 충돌 해소 + 전략별 MAX HOLD)")
-    logger.info(f"루프 간격: {LOOP_INTERVAL_SEC}초 | 최대 보유: 전략별 max_hold_bars (15m~4h)")
+    logger.info("🚀 SMRA Bot v2.15 시작 (타임프레임별 봉 마감 동기화 + 전략별 MAX HOLD)")
+    logger.info(f"루프 간격: 5분봉 마감 동기화 | 15m→15분, 1h→정시, 4h→4시간 정각에 전략 평가")
 
     while True:
         start = time.time()

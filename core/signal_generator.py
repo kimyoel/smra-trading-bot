@@ -1,5 +1,14 @@
 """
-core/signal_generator.py — 전략별 지표 AND 조건 → 신호 생성 (v3.1)
+core/signal_generator.py — 전략별 지표 AND 조건 → 신호 생성 (v3.2)
+
+[v3.2] 타임프레임별 봉 마감 동기화
+  - 기존: 5분마다 17개 전략 전부 지표 조회 (불필요한 API 호출 + 연산 낭비)
+  - 변경: 각 전략의 타임프레임 봉이 마감될 때만 해당 전략 지표 조회
+    - 15m 전략 (3개) → 15분 정각에만 (minute % 15 == 0)
+    - 1h 전략 (11개) → 정시에만 (minute == 0)
+    - 4h 전략 (3개)  → 4시간 정각에만 (hour % 4 == 0 and minute == 0)
+  - 효과: API 호출량 ~75% 감소, 백테스트와 동일한 봉 마감 타이밍 보장
+  - 참고: 5m 전략은 현재 없으나 추가 시 매 루프 실행됨
 
 [v3.1] config.py ALL_STRATEGIES 기반 전략 활성/비활성 필터 추가
   - signal_generator가 STRATEGY_REGISTRY 전체를 순회하는 대신
@@ -21,6 +30,7 @@ core/signal_generator.py — 전략별 지표 AND 조건 → 신호 생성 (v3.1
 """
 
 import pandas as pd
+from datetime import datetime, timezone
 from config import ALL_STRATEGIES
 from strategies.registry import STRATEGY_REGISTRY
 from strategies.indicators import INDICATOR_MAP, get_atr_value
@@ -114,9 +124,52 @@ def _check_cross(fn, df_full: pd.DataFrame) -> str | bool:
         return False
 
 
+# ── [v3.2] 타임프레임별 봉 마감 체크 ──────────────────────────
+# 루프는 5분마다 실행되므로, 각 타임프레임이 마감되는 시점인지 확인
+# 5m: 매번 (기본), 15m: 15분 경계, 1h: 정시, 4h: 4시간 경계
+_TF_SECONDS = {"5m": 300, "15m": 900, "1h": 3600, "4h": 14400}
+
+
+def _is_candle_boundary(timeframe: str, utc_now: datetime | None = None) -> bool:
+    """
+    현재 UTC 시각이 해당 타임프레임의 봉 마감 직후인지 판단.
+
+    루프가 5분봉 마감 + 3초에 실행되므로:
+      - 15m: minute in (0, 15, 30, 45)  → True
+      - 1h:  minute == 0                → True
+      - 4h:  hour % 4 == 0, minute == 0 → True
+      - 5m:  항상 True (매 루프)
+
+    Returns:
+        True면 이번 루프에서 해당 타임프레임 전략을 평가해야 함.
+    """
+    if utc_now is None:
+        utc_now = datetime.now(timezone.utc)
+
+    minute = utc_now.minute
+    hour   = utc_now.hour
+
+    if timeframe == "5m":
+        return True
+    elif timeframe == "15m":
+        return minute % 15 == 0
+    elif timeframe == "1h":
+        return minute == 0
+    elif timeframe == "4h":
+        return hour % 4 == 0 and minute == 0
+    else:
+        # 알 수 없는 타임프레임은 안전하게 매번 실행
+        return True
+
+
 def generate_all_signals() -> list[dict]:
     """
-    config.ALL_STRATEGIES에 등록된 전략만 감시/매매. (v3.1)
+    config.ALL_STRATEGIES에 등록된 전략만 감시/매매. (v3.2)
+
+    [v3.2 변경점]
+      - 타임프레임별 봉 마감 시점에만 해당 전략 지표 조회
+      - 15m: 15분마다, 1h: 1시간마다, 4h: 4시간마다
+      - 봉이 마감되지 않은 타임프레임의 전략은 스킵 (API 절약)
 
     [v3.1 변경점]
       - STRATEGY_REGISTRY 전체 대신 ALL_STRATEGIES에 포함된 전략만 순회
@@ -130,6 +183,7 @@ def generate_all_signals() -> list[dict]:
     신호 발생 시 signal dict 반환, 미발생 시 리스트에서 제외.
     """
     signals = []
+    utc_now = datetime.now(timezone.utc)
 
     # ── [v3.1] config.ALL_STRATEGIES 기반 활성 전략 필터링 ────
     active_strategies = {}
@@ -139,22 +193,46 @@ def generate_all_signals() -> list[dict]:
         else:
             logger.warning(f"[SIGNAL] ⚠️ ALL_STRATEGIES에 '{sid}' 있으나 REGISTRY에 미등록 → 무시")
 
-    logger.info(
-        f"[SIGNAL] 활성 전략: {len(active_strategies)}개 "
-        f"(REGISTRY {len(STRATEGY_REGISTRY)}개 중 ALL_STRATEGIES {len(ALL_STRATEGIES)}개 매칭)"
-    )
+    # ── [v3.2] 타임프레임별 봉 마감 필터링 ────────────────────
+    # 현재 시각 기준으로 봉이 마감된 타임프레임의 전략만 남김
+    eligible_strategies = {}
+    skipped_tf_counts: dict[str, int] = {}   # 스킵된 타임프레임별 카운트
+    for sid, strat in active_strategies.items():
+        tf = strat["timeframe"]
+        if _is_candle_boundary(tf, utc_now):
+            eligible_strategies[sid] = strat
+        else:
+            skipped_tf_counts[tf] = skipped_tf_counts.get(tf, 0) + 1
 
-    # ── 병렬 pre-fetch: 활성 전략의 유니크 조합만 캐시 워밍 ──
+    # 로그: 활성/스킵 현황
+    tf_time_str = utc_now.strftime("%H:%M")
+    if skipped_tf_counts:
+        skip_detail = ", ".join(f"{tf}:{cnt}개" for tf, cnt in sorted(skipped_tf_counts.items()))
+        logger.info(
+            f"[SIGNAL] [{tf_time_str} UTC] 활성 {len(eligible_strategies)}개 "
+            f"(전체 {len(active_strategies)}개 중 봉 미마감 스킵: {skip_detail})"
+        )
+    else:
+        logger.info(
+            f"[SIGNAL] [{tf_time_str} UTC] 활성 전략: {len(eligible_strategies)}개 "
+            f"(전체 {len(active_strategies)}개 — 모든 타임프레임 봉 마감)"
+        )
+
+    if not eligible_strategies:
+        logger.info(f"[SIGNAL] [{tf_time_str} UTC] 이번 루프에 평가할 전략 없음")
+        return signals
+
+    # ── 병렬 pre-fetch: 봉 마감된 전략의 유니크 조합만 캐시 워밍 ──
     unique_pairs = list({
         (s["symbol"], s["timeframe"])
-        for s in active_strategies.values()
+        for s in eligible_strategies.values()
     })
     import time as _time
     t0 = _time.time()
     fetch_ohlcv_parallel(unique_pairs, limit=100)
     logger.info(f"[SIGNAL] 병렬 pre-fetch {len(unique_pairs)}개 완료 ({_time.time()-t0:.2f}초)")
 
-    for strategy_id, strategy in active_strategies.items():
+    for strategy_id, strategy in eligible_strategies.items():
         symbol    = strategy["symbol"]
         timeframe = strategy["timeframe"]
 
