@@ -1,5 +1,5 @@
 """
-main.py — SMRA Bot 메인 루프 (v2.15)
+main.py — SMRA Bot 메인 루프 (v2.16)
 
 v2.6: 봉 마감 정각 동기화 (wait_for_candle_close)
 v2.7: 신호 TTL → 봉 경계 체크로 대체, 파일 기반 entry_time (v2.9)
@@ -30,6 +30,13 @@ v2.15:
          - 변경: 각 전략의 타임프레임 봉 마감 시점에만 해당 전략 평가
            15m → 15분 정각, 1h → 정시, 4h → 4시간 정각
          - 효과: API 호출량 ~75% 감소 (비마감 루프에서 1h/4h 전략 스킵)
+v2.16:
+  [최적화] 5분봉 루프 → 15분봉 루프로 변경
+         - 5m 전략 0개 → 최소 타임프레임 15m 기준으로 루프 주기 변경
+         - CANDLE_TF_SEC: 300초(5분) → 900초(15분)
+         - 루프 횟수: 288→96/일 (67% 감소), API 호출 추가 절감
+         - 15m 전략은 매 루프 평가, 1h는 4번째마다, 4h는 16번째마다
+         - 봉 경계 체크도 15분봉 ID 기준으로 전환
 v2.14:
   [FIX] 고정 24봉 강제청산 → 전략별 max_hold_bars 동적 적용
          - registry.py의 max_hold_bars 필드 참조 (backtest_report_final.docx 기반)
@@ -69,8 +76,10 @@ logger = get_logger("main")
 # max_hold_bars × TF_BAR_HOURS[tf] = 최대 보유 시간(h)
 TF_BAR_HOURS = {"5m": 1/12, "15m": 0.25, "1h": 1.0, "4h": 4.0}
 
-# 봉 마감 동기화 설정
-CANDLE_TF_SEC = 5 * 60   # 기준: 5분봉 (300초)
+# [v2.16] 봉 마감 동기화 설정 — 15분봉 기준
+# 5m 전략 없음 → 최소 타임프레임 15m 기준 루프
+# 15m 전략 매 루프, 1h 전략 4번째 루프, 4h 전략 16번째 루프에 평가
+CANDLE_TF_SEC = 15 * 60  # 기준: 15분봉 (900초)
 CANDLE_OFFSET = 3        # 봉 마감 후 3초 뒤 실행 (데이터 확정 여유)
 
 # [v2.12] 루프 간 포지션 상태 추적 (청산 감지용)
@@ -79,23 +88,23 @@ _prev_open_positions: dict = {}
 
 def wait_for_candle_close() -> None:
     """
-    다음 5분봉 마감 후 CANDLE_OFFSET초에 맞춰 sleep.
-    5분봉 정각(00, 05, 10 ... 분)에 +3초 시점에 루프가 시작됨.
-    15분봉·1시간봉은 5분의 배수 → 자동으로 동기화됨.
+    [v2.16] 다음 15분봉 마감 후 CANDLE_OFFSET초에 맞춰 sleep.
+    15분 정각(00, 15, 30, 45분)에 +3초 시점에 루프가 시작됨.
+    1시간봉(15분의 배수)·4시간봉은 자동으로 동기화됨.
     """
     now = time.time()
     next_close = (int(now / CANDLE_TF_SEC) + 1) * CANDLE_TF_SEC
     sleep_sec  = next_close + CANDLE_OFFSET - now
     wake_utc   = datetime.fromtimestamp(next_close + CANDLE_OFFSET, tz=timezone.utc)
     logger.info(
-        f"[LOOP] ⏱ 다음 5분봉 마감 대기: {sleep_sec:.1f}초 "
+        f"[LOOP] ⏱ 다음 15분봉 마감 대기: {sleep_sec:.1f}초 "
         f"(기상 시각 {wake_utc.strftime('%H:%M:%S')} UTC)"
     )
     time.sleep(max(0, sleep_sec))
 
 
 def _current_candle_id() -> int:
-    """현재 5분봉 ID (Unix timestamp를 300으로 나눈 정수)"""
+    """현재 15분봉 ID (Unix timestamp를 900으로 나눈 정수)"""
     return int(time.time() / CANDLE_TF_SEC)
 
 
@@ -309,8 +318,8 @@ def run_loop() -> None:
 
 
 def main() -> None:
-    logger.info("🚀 SMRA Bot v2.15 시작 (타임프레임별 봉 마감 동기화 + 전략별 MAX HOLD)")
-    logger.info(f"루프 간격: 5분봉 마감 동기화 | 15m→15분, 1h→정시, 4h→4시간 정각에 전략 평가")
+    logger.info("🚀 SMRA Bot v2.16 시작 (15분봉 루프 + 타임프레임별 봉 마감 동기화 + 전략별 MAX HOLD)")
+    logger.info(f"루프 간격: 15분봉 마감 동기화 (96루프/일) | 15m→매 루프, 1h→정시, 4h→4시간 정각에 전략 평가")
 
     while True:
         start = time.time()

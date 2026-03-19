@@ -1,14 +1,14 @@
 """
-core/signal_generator.py — 전략별 지표 AND 조건 → 신호 생성 (v3.2)
+core/signal_generator.py — 전략별 지표 AND 조건 → 신호 생성 (v3.3)
 
-[v3.2] 타임프레임별 봉 마감 동기화
-  - 기존: 5분마다 17개 전략 전부 지표 조회 (불필요한 API 호출 + 연산 낭비)
-  - 변경: 각 전략의 타임프레임 봉이 마감될 때만 해당 전략 지표 조회
-    - 15m 전략 (3개) → 15분 정각에만 (minute % 15 == 0)
-    - 1h 전략 (11개) → 정시에만 (minute == 0)
-    - 4h 전략 (3개)  → 4시간 정각에만 (hour % 4 == 0 and minute == 0)
-  - 효과: API 호출량 ~75% 감소, 백테스트와 동일한 봉 마감 타이밍 보장
-  - 참고: 5m 전략은 현재 없으나 추가 시 매 루프 실행됨
+[v3.3] 5분봉 루프 → 15분봉 루프 전환
+  - 5m 전략 0개 → 최소 타임프레임 15m 기준으로 루프 변경
+  - 15m 전략: 매 루프 평가 (항상 True)
+  - 1h 전략: 4루프마다 (minute == 0)
+  - 4h 전략: 16루프마다 (hour % 4 == 0 and minute == 0)
+  - 5m 전략: 제거됨 — _is_candle_boundary에서 5m 케이스 삭제
+  - 효과: 루프 96회/일, 지표 평가 570회/일 (API 추가 절감)
+  - 참고: 5m 전략은 제거됨 (v4.0 config)
 
 [v3.1] config.py ALL_STRATEGIES 기반 전략 활성/비활성 필터 추가
   - signal_generator가 STRATEGY_REGISTRY 전체를 순회하는 대신
@@ -73,7 +73,7 @@ def _check_cross(fn, df_full: pd.DataFrame) -> str | bool:
     [v3.0] 크로스(전환) 감지 — 백테스트 진입 타이밍 재현.
 
     개념:
-      봇은 5분봉 마감 직후 실행. 이 시점에서:
+      봇은 15분봉 마감 직후 실행. 이 시점에서:
       - df.iloc[-1] = 방금 확정된 봉 (현재 봉)
       - df.iloc[-2] = 그 직전 봉
 
@@ -124,21 +124,20 @@ def _check_cross(fn, df_full: pd.DataFrame) -> str | bool:
         return False
 
 
-# ── [v3.2] 타임프레임별 봉 마감 체크 ──────────────────────────
-# 루프는 5분마다 실행되므로, 각 타임프레임이 마감되는 시점인지 확인
-# 5m: 매번 (기본), 15m: 15분 경계, 1h: 정시, 4h: 4시간 경계
-_TF_SECONDS = {"5m": 300, "15m": 900, "1h": 3600, "4h": 14400}
+# ── [v3.3] 타임프레임별 봉 마감 체크 ──────────────────────────
+# 루프는 15분마다 실행되므로, 각 타임프레임이 마감되는 시점인지 확인
+# 15m: 매번 (기본 루프 = 15분봉), 1h: 정시, 4h: 4시간 경계
+_TF_SECONDS = {"15m": 900, "1h": 3600, "4h": 14400}
 
 
 def _is_candle_boundary(timeframe: str, utc_now: datetime | None = None) -> bool:
     """
-    현재 UTC 시각이 해당 타임프레임의 봉 마감 직후인지 판단.
+    [v3.3] 현재 UTC 시각이 해당 타임프레임의 봉 마감 직후인지 판단.
 
-    루프가 5분봉 마감 + 3초에 실행되므로:
-      - 15m: minute in (0, 15, 30, 45)  → True
-      - 1h:  minute == 0                → True
-      - 4h:  hour % 4 == 0, minute == 0 → True
-      - 5m:  항상 True (매 루프)
+    루프가 15분봉 마감 + 3초에 실행되므로:
+      - 15m: 항상 True (매 루프 = 15분봉 마감)
+      - 1h:  minute == 0 (정시에만)
+      - 4h:  hour % 4 == 0, minute == 0
 
     Returns:
         True면 이번 루프에서 해당 타임프레임 전략을 평가해야 함.
@@ -149,10 +148,8 @@ def _is_candle_boundary(timeframe: str, utc_now: datetime | None = None) -> bool
     minute = utc_now.minute
     hour   = utc_now.hour
 
-    if timeframe == "5m":
-        return True
-    elif timeframe == "15m":
-        return minute % 15 == 0
+    if timeframe == "15m":
+        return True  # 기본 루프가 15분봉 기준이므로 항상 평가
     elif timeframe == "1h":
         return minute == 0
     elif timeframe == "4h":
@@ -164,7 +161,12 @@ def _is_candle_boundary(timeframe: str, utc_now: datetime | None = None) -> bool
 
 def generate_all_signals() -> list[dict]:
     """
-    config.ALL_STRATEGIES에 등록된 전략만 감시/매매. (v3.2)
+    config.ALL_STRATEGIES에 등록된 전략만 감시/매매. (v3.3)
+
+    [v3.3 변경점]
+      - 15분봉 루프 기준으로 _is_candle_boundary 조정
+      - 15m: 매 루프 평가 (True), 1h: 4루프마다, 4h: 16루프마다
+      - 5m 전략 제거됨 — _is_candle_boundary에서 5m 케이스 삭제
 
     [v3.2 변경점]
       - 타임프레임별 봉 마감 시점에만 해당 전략 지표 조회
