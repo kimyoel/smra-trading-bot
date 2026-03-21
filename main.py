@@ -1,5 +1,5 @@
 """
-main.py — SMRA Bot 메인 루프 (v2.18)
+main.py — SMRA Bot 메인 루프 (v5.0)
 
 v2.6: 봉 마감 정각 동기화 (wait_for_candle_close)
 v2.7: 신호 TTL → 봉 경계 체크로 대체, 파일 기반 entry_time (v2.9)
@@ -44,20 +44,18 @@ v2.14:
          - TF_HOURS 제거 → TF_BAR_HOURS로 교체 (1봉당 시간)
          - 강제청산 기준: max_hold_bars x bar_hours
 v2.13:
-  [FIX] signal_arbiter v2.5 연계 — Sharpe 기반 심볼 충돌 해소
-         - arbiter에서 동일 심볼 → Sharpe 최고 1개만 반환
+  [FIX] signal_arbiter v5.0 연계 — Score 기반 심볼 충돌 해소
+         - arbiter에서 동일 심볼 → Score 최고 1개만 반환
          - executed_symbols는 2중 방어 (arbiter가 놓치는 케이스 안전장치)로 유지
          - 전략별 최적 TP/SL 매칭: registry의 tp_mult/sl_mult → arbiter → order_manager 흐름 확인
 v2.18:
   [FIX] 텔레그램 알림 중복 발송 완전 수정
-         근본원인: 루프 early return 시 _prev_open_positions 갱신 누락
-         → 이미 알림 보낸 청산 심볼이 다음 루프에서 재감지 → 무한 반복
-         수정사항:
-         1. _notified_closes set 도입 — 청산 알림 발송한 심볼:전략ID 기록
-            → 다음 루프에서 동일 건 재발송 차단
-         2. 모든 early return 경로에 _update_prev_snapshot() 보장
-         3. 진입 알림도 _notified_entries set으로 1회 보장
-         4. 새 진입 시 해당 심볼의 notified 기록 클리어 (재진입 시 정상 알림)
+v5.0:
+  [전략 교체] WFA OOS 보고서 기반 BTCUSDT 15m 전용 10개 전략으로 교체
+  - 기존 17개 다심볼(BTC/ETH/XRP) → BTCUSDT 15m LONG 5 + SHORT 5
+  - 충돌 해소: Sharpe → Score 기반 (WFA 종합 스코어)
+  - entry_fn 아키텍처: 전략별 복합 진입 함수로 교체
+  - 데이터 출처: BTCUSDT_15m_WFA_Report.docx (2026-03-21)
 """
 
 import time
@@ -232,10 +230,10 @@ def run_loop() -> None:
         _update_prev_snapshot(open_positions)  # [v2.17] early return 전 스냅샷 갱신
         return
 
-    # ── 7. Sharpe 순 실행 (CB 발동 시 다음 신호 폴오버) ───────
+    # ── 7. Score 순 실행 (CB 발동 시 다음 신호 폴오버) ───────
     order_placed = False
     # [v2.9] 이번 루프에서 execute_order 호출한 심볼 추적
-    # [v2.13] arbiter v2.5에서 Sharpe 기반 심볼 중복 제거 후 넘어오지만
+    # [v5.0] arbiter v5.0에서 Score 기반 심볼 중복 제거 후 넘어오지만
     #         2중 방어 유지 (arbiter→main 사이에 포지션 변경 가능성 대비)
     executed_symbols: set = set()
 
@@ -368,8 +366,8 @@ def _update_prev_snapshot(
 
 
 def main() -> None:
-    logger.info("🚀 SMRA Bot v2.18 시작 (15분봉 루프 + 알림 1회 보장 + 전략별 MAX HOLD)")
-    logger.info(f"루프 간격: 15분봉 마감 동기화 (96루프/일) | 15m→매 루프, 1h→정시, 4h→4시간 정각에 전략 평가")
+    logger.info("🚀 SMRA Bot v5.0 시작 (BTCUSDT 15m WFA 10전략 + Score 기반 충돌 해소)")
+    logger.info(f"루프 간격: 15분봉 마감 동기화 (96루프/일) | 10개 전략 매 루프 평가 | Score 순위 충돌 해소")
 
     while True:
         start = time.time()

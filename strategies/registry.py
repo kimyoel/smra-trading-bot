@@ -1,400 +1,255 @@
 """
-strategies/registry.py — 백테스트 검증 전략 레지스트리 (v4.2)
+strategies/registry.py — WFA OOS 백테스트 검증 전략 레지스트리 (v5.0)
 
-[v4.2] backtest_report_final.docx 기반 MAX HOLD 매칭
-  - 각 전략별 max_hold_bars 필드 추가
-  - 백테스트 보고서의 MAX HOLD 컬럼에서 추출
-  - 16개 전략: 48봉, 1개 전략(XRP_4h_SHORT_MOM): 16봉
-  - main.py의 고정 24봉 강제청산 → 전략별 max_hold_bars 동적 적용
-  - XRP_1h_SHORT_AD_2: 보고서에 TP5/SL2 없음 → S_AD(TP5/SL3) max_hold=48 적용
+[v5.0] BTCUSDT_15m_WFA_Report.docx 기반 전면 교체
+  - 기존 17개 다심볼 전략 → BTCUSDT 15m 전용 10개 전략
+  - LONG 5개 + SHORT 5개 (WFA 황금기준 통과 상위 전략)
+  - 선별 기준: survived_windows ≥ 5, avg_calmar ≥ 2.0, min_calmar ≥ 0.5
+  - 종합 스코어: (survived_windows×2) + (min_calmar×3) + ln(1+avg_calmar)
+  - 충돌 해소: Score 기반 순위 (config.py ALL_STRATEGIES 순서)
 
-[v4.1] leverage_v3_final.csv 기반 레버리지 매칭
-  - 기존 고정 레버리지(3~5) → CSV rec_lev 값으로 교체
-  - Kelly Criterion + 등급/신뢰도 기반 레버리지 산출
-  - S등급 scale=1.0, A등급 scale=0.75
-  - max_leverage = leverage (CSV 권장값이 상한)
-  - XRP_1h_SHORT_AD_2: CSV에 TP5/SL2 없음 → S_AD(TP5/SL3) rec_lev=4 적용 (보수적)
-
-[v4.0] 472개 전략 백테스트 결과 기반 전면 교체
-  - 기존 13개 → 17개 (S등급 5, A등급 12)
-  - 5m 전략 전면 제거 (평균 OOS 0.4859, 수익률 -38.10%)
-  - BOTH 방향 제거 → LONG/SHORT 명시적 분리
-  - TP/SL: 모두 fixed (백테스트 최적 조합)
-  - 모든 전략에 direction 필드 추가
-  - 변경 근거: TASK.md 참조
-  - 데이터 출처: backtest_report.docx, leverage_v3_final.csv
+주요 변경:
+  - 모든 전략이 BTCUSDT 15분봉 → 심볼/타임프레임 단일화
+  - entry_fn 필드: 각 전략의 진입 조건 함수명 (strategies/indicators.py에 정의)
+  - 기존 indicators 리스트 + AND 조건 → entry_fn 단일 함수로 교체
+    (보고서의 복합 조건을 정확히 구현하기 위해)
+  - score 필드: 충돌 시 우선순위 (높을수록 우선)
+  - leverage: WFA 보고서에 레버리지 정보 없음 → 보수적 3x 기본값
+  - max_hold_bars: 보고서 max_hold 컬럼 기반
 
 TP/SL 타입:
   tp_type: "fixed" (고정 %)
-  tp_mult: TP 비율 (소수, 예: 0.05 = 5%)
-  sl_mult: SL 비율 (소수, 예: 0.03 = 3%)
-
-등급 기준 (OOS = Out-of-Sample 점수):
-  S등급: OOS >= 0.90  (5개)
-  A등급: OOS 0.80~0.89 (12개)
-
-레버리지 출처: leverage_v3_final.csv (rec_lev 컬럼)
-  - Kelly Criterion 기반 full_kelly_lev에 등급/신뢰도 스케일 적용
-  - S등급: scale=1.0 x trust (0.89~0.93)
-  - A등급: scale=0.75 x trust (0.88~0.92)
-
-MAX HOLD 출처: backtest_report_final.docx (MAX HOLD 컬럼)
-  - 백테스트시 포지션 최대 보유 봉수
-  - 강제청산 기준: max_hold_bars x timeframe_hours
-  - 16개 전략: 48봉, 1개 전략(XRP_4h_SHORT_MOM): 16봉
+  tp_mult: TP 비율 (소수, 예: 0.10 = 10%)
+  sl_mult: SL 비율 (소수, 예: 0.025 = 2.5%)
 """
 
 STRATEGY_REGISTRY = {
 
     # ═══════════════════════════════════════════════════════════
-    # Tier 1: S등급 (OOS >= 0.90) — 5개
+    # LONG 전략 — 상위 5개 (Score 순)
     # ═══════════════════════════════════════════════════════════
 
-    # #1 — 전체 최고 OOS (0.9837) + 최고 수익률 (943.59%)
-    # 보고서: XRP 1h SHORT S_AD | Sharpe 34.39 | MDD -3.18%
-    # 레버리지: rec_lev=4, S_scale=1.0_trust=0.89
-    "XRP_1h_SHORT_AD": {
-        "id":         "XRP_1h_SHORT_AD",
-        "symbol":     "XRP/USDT",
-        "timeframe":  "1h",
-        "direction":  "short",
-        "indicators": ["AD"],
-        "sharpe":     34.39,
-        "win_rate":   0.521,
-        "leverage":   4,
-        "max_leverage": 4,
-        "tp_type":    "fixed",
-        "tp_mult":    0.050,     # TP 5.0%
-        "sl_mult":    0.030,     # SL 3.0%
-        "base_mdd":   0.0318,
-        "max_hold_bars": 48,   # MAX HOLD 48봉 (1h x 48 = 48h)
+    # LONG #1 — 전체 2위 | 7윈도우 생존, 3중 컨펌 구조
+    # 진입: WR(14)<-80 AND Close<BB_lower(20,2) AND EMA5>EMA26>EMA50
+    # 해석: Williams %R 과매도 + BB 하단 이탈 + EMA 정배열 → 추세 추종형 평균 회귀
+    "L1_WILLR_BB_EMA_STACK": {
+        "id":             "L1_WILLR_BB_EMA_STACK",
+        "symbol":         "BTC/USDT",
+        "timeframe":      "15m",
+        "direction":      "long",
+        "entry_fn":       "entry_long_willr_bb_ema_stack",
+        "score":          19.21,
+        "survived_windows": 7,
+        "avg_calmar":     3.649,
+        "min_calmar":     1.223,
+        "leverage":       3,
+        "max_leverage":   5,
+        "tp_type":        "fixed",
+        "tp_mult":        0.10,      # TP 10.0%
+        "sl_mult":        0.025,     # SL 2.5%
+        "base_mdd":       0.025,
+        "max_hold_bars":  48,        # 48봉 (12시간)
     },
 
-    # #2 — ETH S등급 최고, 수익률 769.25%
-    # 보고서: ETH 1h LONG 2_OBV_VWAP | Sharpe 29.60 | MDD -3.18%
-    # 레버리지: rec_lev=4, S_scale=1.0_trust=0.89
-    "ETH_1h_LONG_OBV_VWAP": {
-        "id":         "ETH_1h_LONG_OBV_VWAP",
-        "symbol":     "ETH/USDT",
-        "timeframe":  "1h",
-        "direction":  "long",
-        "indicators": ["OBV", "VWAP"],
-        "sharpe":     29.60,
-        "win_rate":   0.546,
-        "leverage":   4,
-        "max_leverage": 4,
-        "tp_type":    "fixed",
-        "tp_mult":    0.050,     # TP 5.0%
-        "sl_mult":    0.030,     # SL 3.0%
-        "base_mdd":   0.0318,
-        "max_hold_bars": 48,   # MAX HOLD 48봉 (1h x 48 = 48h)
+    # LONG #2 — 전체 5위 | 안정성 LONG 1위 (min_calmar 2.451)
+    # 진입: WR(14)<-80 AND EMA5>EMA26>EMA50
+    # 필터: ADX(14)>25 (추세 강도 확인)
+    "L2_ADX_WILLR_EMA_STACK": {
+        "id":             "L2_ADX_WILLR_EMA_STACK",
+        "symbol":         "BTC/USDT",
+        "timeframe":      "15m",
+        "direction":      "long",
+        "entry_fn":       "entry_long_adx_willr_ema_stack",
+        "score":          18.73,
+        "survived_windows": 5,
+        "avg_calmar":     2.953,
+        "min_calmar":     2.451,
+        "leverage":       3,
+        "max_leverage":   5,
+        "tp_type":        "fixed",
+        "tp_mult":        0.06,      # TP 6.0%
+        "sl_mult":        0.05,      # SL 5.0%
+        "base_mdd":       0.05,
+        "max_hold_bars":  48,        # 48봉 (12시간)
     },
 
-    # #3 — XRP S등급, 수익률 770.37%
-    # 보고서: XRP 1h SHORT 2_VWAP_AD | Sharpe 29.17 | MDD -3.18%
-    # 레버리지: rec_lev=4, S_scale=1.0_trust=0.89
-    "XRP_1h_SHORT_VWAP_AD": {
-        "id":         "XRP_1h_SHORT_VWAP_AD",
-        "symbol":     "XRP/USDT",
-        "timeframe":  "1h",
-        "direction":  "short",
-        "indicators": ["VWAP", "AD"],
-        "sharpe":     29.17,
-        "win_rate":   0.530,
-        "leverage":   4,
-        "max_leverage": 4,
-        "tp_type":    "fixed",
-        "tp_mult":    0.050,     # TP 5.0%
-        "sl_mult":    0.030,     # SL 3.0%
-        "base_mdd":   0.0318,
-        "max_hold_bars": 48,   # MAX HOLD 48봉 (1h x 48 = 48h)
+    # LONG #3 — 전체 8위 | 저볼륨 돌파 특화
+    # 진입: AroonUp(25)>70 AND Close>Donchian_upper(20)
+    # 필터: Volume ≤ SMA(20)×1.5 (거래량 미급증 조건)
+    "L3_AROON_DONCHIAN_VOL_INV": {
+        "id":             "L3_AROON_DONCHIAN_VOL_INV",
+        "symbol":         "BTC/USDT",
+        "timeframe":      "15m",
+        "direction":      "long",
+        "entry_fn":       "entry_long_aroon_donchian_vol_inv",
+        "score":          15.97,
+        "survived_windows": 5,
+        "avg_calmar":     2.044,
+        "min_calmar":     1.619,
+        "leverage":       3,
+        "max_leverage":   5,
+        "tp_type":        "fixed",
+        "tp_mult":        0.12,      # TP 12.0%
+        "sl_mult":        0.06,      # SL 6.0%
+        "base_mdd":       0.06,
+        "max_hold_bars":  48,        # 48봉 (12시간)
     },
 
-    # #4 — BTC S등급, 수익률 430.08%, 최저 MDD -1.68%
-    # 보고서: BTC 1h LONG S_ADX | Sharpe 32.63 | MDD -1.68%
-    # 레버리지: rec_lev=9, S_scale=1.0_trust=0.93
-    "BTC_1h_LONG_ADX": {
-        "id":         "BTC_1h_LONG_ADX",
-        "symbol":     "BTC/USDT",
-        "timeframe":  "1h",
-        "direction":  "long",
-        "indicators": ["ADX"],
-        "sharpe":     32.63,
-        "win_rate":   0.404,
-        "leverage":   9,
-        "max_leverage": 9,
-        "tp_type":    "fixed",
-        "tp_mult":    0.050,     # TP 5.0%
-        "sl_mult":    0.015,     # SL 1.5%
-        "base_mdd":   0.0168,
-        "max_hold_bars": 48,   # MAX HOLD 48봉 (1h x 48 = 48h)
+    # LONG #4 — 전체 9위 | LONG 최고 avg_calmar 4.042
+    # 진입: EMA12>EMA26 AND MACD>Signal(12,26,9) AND Parabolic SAR 상승 전환
+    # 특징: max_hold 12봉(3시간) — 단기 포지션
+    "L4_EMA_MACD_PSAR": {
+        "id":             "L4_EMA_MACD_PSAR",
+        "symbol":         "BTC/USDT",
+        "timeframe":      "15m",
+        "direction":      "long",
+        "entry_fn":       "entry_long_ema_macd_psar",
+        "score":          15.64,
+        "survived_windows": 6,
+        "avg_calmar":     4.042,
+        "min_calmar":     0.675,
+        "leverage":       3,
+        "max_leverage":   5,
+        "tp_type":        "fixed",
+        "tp_mult":        0.06,      # TP 6.0%
+        "sl_mult":        0.02,      # SL 2.0%
+        "base_mdd":       0.02,
+        "max_hold_bars":  12,        # 12봉 (3시간)
     },
 
-    # #5 — BTC 15m S등급, 수익률 300.87%, 최고 Sharpe 36.04
-    # 보고서: BTC 15m LONG 3_STDDEV_AD_ADX | Sharpe 36.04 | MDD -3.18%
-    # 레버리지: rec_lev=4, S_scale=1.0_trust=0.89
-    "BTC_15m_LONG_STDDEV_AD_ADX": {
-        "id":         "BTC_15m_LONG_STDDEV_AD_ADX",
-        "symbol":     "BTC/USDT",
-        "timeframe":  "15m",
-        "direction":  "long",
-        "indicators": ["STDDEV", "AD", "ADX"],
-        "sharpe":     36.04,
-        "win_rate":   0.482,
-        "leverage":   4,
-        "max_leverage": 4,
-        "tp_type":    "fixed",
-        "tp_mult":    0.050,     # TP 5.0%
-        "sl_mult":    0.030,     # SL 3.0%
-        "base_mdd":   0.0318,
-        "max_hold_bars": 48,   # MAX HOLD 48봉 (15m x 48 = 12h)
-    },
-
-    # ═══════════════════════════════════════════════════════════
-    # Tier 2: A등급 상위 (OOS 0.85+) — 7개
-    # ═══════════════════════════════════════════════════════════
-
-    # #6 — BTC A등급, MOM 단독, 수익률 329.19%
-    # 보고서: BTC 1h LONG S_MOM | Sharpe 29.84 | MDD -2.18%
-    # 레버리지: rec_lev=7, S_scale=1.0_trust=0.89
-    "BTC_1h_LONG_MOM": {
-        "id":         "BTC_1h_LONG_MOM",
-        "symbol":     "BTC/USDT",
-        "timeframe":  "1h",
-        "direction":  "long",
-        "indicators": ["MOM"],
-        "sharpe":     29.84,
-        "win_rate":   0.422,
-        "leverage":   7,
-        "max_leverage": 7,
-        "tp_type":    "fixed",
-        "tp_mult":    0.050,     # TP 5.0%
-        "sl_mult":    0.020,     # SL 2.0%
-        "base_mdd":   0.0218,
-        "max_hold_bars": 48,   # MAX HOLD 48봉 (1h x 48 = 48h)
-    },
-
-    # #7 — BTC A등급, ROC 단독 (MOM과 동일 성과, 비율 버전)
-    # 보고서: BTC 1h LONG S_ROC | OOS 0.8871 | Sharpe 29.84
-    # 레버리지: rec_lev=7, S_scale=1.0_trust=0.89
-    "BTC_1h_LONG_ROC": {
-        "id":         "BTC_1h_LONG_ROC",
-        "symbol":     "BTC/USDT",
-        "timeframe":  "1h",
-        "direction":  "long",
-        "indicators": ["ROC"],
-        "sharpe":     29.84,
-        "win_rate":   0.422,
-        "leverage":   7,
-        "max_leverage": 7,
-        "tp_type":    "fixed",
-        "tp_mult":    0.050,     # TP 5.0%
-        "sl_mult":    0.020,     # SL 2.0%
-        "base_mdd":   0.0218,
-        "max_hold_bars": 48,   # MAX HOLD 48봉 (1h x 48 = 48h)
-    },
-
-    # #8 — BTC 15m A등급, 3지표 조합, 수익률 220.92%
-    # 보고서: BTC 15m LONG 3_AROON_AD_ATR_SIG | Sharpe 34.20 | MDD -3.18%
-    # 레버리지: rec_lev=4, S_scale=1.0_trust=0.89
-    "BTC_15m_LONG_AROON_AD_ATR_SIG": {
-        "id":         "BTC_15m_LONG_AROON_AD_ATR_SIG",
-        "symbol":     "BTC/USDT",
-        "timeframe":  "15m",
-        "direction":  "long",
-        "indicators": ["AROON", "AD", "ATR_SIG"],
-        "sharpe":     34.20,
-        "win_rate":   0.472,
-        "leverage":   4,
-        "max_leverage": 4,
-        "tp_type":    "fixed",
-        "tp_mult":    0.050,     # TP 5.0%
-        "sl_mult":    0.030,     # SL 3.0%
-        "base_mdd":   0.0318,
-        "max_hold_bars": 48,   # MAX HOLD 48봉 (15m x 48 = 12h)
-    },
-
-    # #9 — BTC SHORT A등급, 수익률 231.60%
-    # 보고서: BTC 1h SHORT 2_OBV_MOM | Sharpe 28.48 | MDD -3.18%
-    # 레버리지: rec_lev=4, S_scale=1.0_trust=0.89
-    "BTC_1h_SHORT_OBV_MOM": {
-        "id":         "BTC_1h_SHORT_OBV_MOM",
-        "symbol":     "BTC/USDT",
-        "timeframe":  "1h",
-        "direction":  "short",
-        "indicators": ["OBV", "MOM"],
-        "sharpe":     28.48,
-        "win_rate":   0.498,
-        "leverage":   4,
-        "max_leverage": 4,
-        "tp_type":    "fixed",
-        "tp_mult":    0.050,     # TP 5.0%
-        "sl_mult":    0.030,     # SL 3.0%
-        "base_mdd":   0.0318,
-        "max_hold_bars": 48,   # MAX HOLD 48봉 (1h x 48 = 48h)
-    },
-
-    # #10 — ETH SHORT A등급, CMF 단독, 수익률 254.37%
-    # 보고서: ETH 1h SHORT S_CMF | Sharpe 26.76 | MDD -2.18%
-    # 레버리지: rec_lev=7, S_scale=1.0_trust=0.89
-    "ETH_1h_SHORT_CMF": {
-        "id":         "ETH_1h_SHORT_CMF",
-        "symbol":     "ETH/USDT",
-        "timeframe":  "1h",
-        "direction":  "short",
-        "indicators": ["CMF"],
-        "sharpe":     26.76,
-        "win_rate":   0.511,
-        "leverage":   7,
-        "max_leverage": 7,
-        "tp_type":    "fixed",
-        "tp_mult":    0.030,     # TP 3.0%
-        "sl_mult":    0.020,     # SL 2.0%
-        "base_mdd":   0.0218,
-        "max_hold_bars": 48,   # MAX HOLD 48봉 (1h x 48 = 48h)
-    },
-
-    # #11 — BTC SHORT A등급, 수익률 247.46%
-    # 보고서: BTC 1h SHORT 2_OBV_VWAP | Sharpe 27.06 | MDD -3.18%
-    # 레버리지: rec_lev=4, S_scale=1.0_trust=0.93
-    "BTC_1h_SHORT_OBV_VWAP": {
-        "id":         "BTC_1h_SHORT_OBV_VWAP",
-        "symbol":     "BTC/USDT",
-        "timeframe":  "1h",
-        "direction":  "short",
-        "indicators": ["OBV", "VWAP"],
-        "sharpe":     27.06,
-        "win_rate":   0.506,
-        "leverage":   4,
-        "max_leverage": 4,
-        "tp_type":    "fixed",
-        "tp_mult":    0.050,     # TP 5.0%
-        "sl_mult":    0.030,     # SL 3.0%
-        "base_mdd":   0.0318,
-        "max_hold_bars": 48,   # MAX HOLD 48봉 (1h x 48 = 48h)
+    # LONG #5 — 전체 10위 | 고RR 타이트 손절형 (RR 24배)
+    # 진입: EMA12>EMA26 AND Parabolic SAR 상승 전환 AND MOM(10)>0
+    # 특징: SL 0.5% 극타이트 — 높은 손절 빈도, 한 번 적중 시 12% 수익
+    "L5_EMA_PSAR_MOM": {
+        "id":             "L5_EMA_PSAR_MOM",
+        "symbol":         "BTC/USDT",
+        "timeframe":      "15m",
+        "direction":      "long",
+        "entry_fn":       "entry_long_ema_psar_mom",
+        "score":          15.53,
+        "survived_windows": 5,
+        "avg_calmar":     2.050,
+        "min_calmar":     1.472,
+        "leverage":       3,
+        "max_leverage":   5,
+        "tp_type":        "fixed",
+        "tp_mult":        0.12,      # TP 12.0%
+        "sl_mult":        0.005,     # SL 0.5%
+        "base_mdd":       0.005,
+        "max_hold_bars":  48,        # 48봉 (12시간)
     },
 
     # ═══════════════════════════════════════════════════════════
-    # Tier 3: A등급 하위 (OOS 0.80~0.85) — 5개
+    # SHORT 전략 — 상위 5개 (Score 순)
     # ═══════════════════════════════════════════════════════════
 
-    # #12 — ETH LONG A등급, 같은 지표 다른 TP/SL (3.0/2.0)
-    # 보고서: ETH 1h LONG 2_OBV_VWAP (TP3/SL2) | OOS 0.8418 | Sharpe 26.60
-    # 레버리지: rec_lev=6, S_scale=1.0_trust=0.89
-    "ETH_1h_LONG_OBV_VWAP_32": {
-        "id":         "ETH_1h_LONG_OBV_VWAP_32",
-        "symbol":     "ETH/USDT",
-        "timeframe":  "1h",
-        "direction":  "long",
-        "indicators": ["OBV", "VWAP"],
-        "sharpe":     26.60,
-        "win_rate":   0.456,
-        "leverage":   6,
-        "max_leverage": 6,
-        "tp_type":    "fixed",
-        "tp_mult":    0.030,     # TP 3.0%
-        "sl_mult":    0.020,     # SL 2.0%
-        "base_mdd":   0.0218,
-        "max_hold_bars": 48,   # MAX HOLD 48봉 (1h x 48 = 48h)
+    # SHORT #1 — 전체 1위 | 종합 스코어 최고 (20.36)
+    # 진입: WR(14)>-20 AND Close>BB_upper(20,2) AND OBV<OBV_SMA(20)
+    # 해석: 가격(BB) + 모멘텀(WR) + 거래량(OBV) 3차원 숏 신호
+    "S1_WILLR_BB_OBV": {
+        "id":             "S1_WILLR_BB_OBV",
+        "symbol":         "BTC/USDT",
+        "timeframe":      "15m",
+        "direction":      "short",
+        "entry_fn":       "entry_short_willr_bb_obv",
+        "score":          20.36,
+        "survived_windows": 7,
+        "avg_calmar":     8.013,
+        "min_calmar":     1.387,
+        "leverage":       3,
+        "max_leverage":   5,
+        "tp_type":        "fixed",
+        "tp_mult":        0.03,      # TP 3.0%
+        "sl_mult":        0.025,     # SL 2.5%
+        "base_mdd":       0.025,
+        "max_hold_bars":  48,        # 48봉 (12시간)
     },
 
-    # #13 — ETH 4h LONG A등급, ADX 단독, 수익률 237.64%
-    # 보고서: ETH 4h LONG S_ADX | OOS 0.8322 | Sharpe 16.93 | MDD -2.18%
-    # 레버리지: rec_lev=5, A_scale=0.75_trust=0.88
-    "ETH_4h_LONG_ADX": {
-        "id":         "ETH_4h_LONG_ADX",
-        "symbol":     "ETH/USDT",
-        "timeframe":  "4h",
-        "direction":  "long",
-        "indicators": ["ADX"],
-        "sharpe":     16.93,
-        "win_rate":   0.393,
-        "leverage":   5,
-        "max_leverage": 5,
-        "tp_type":    "fixed",
-        "tp_mult":    0.050,     # TP 5.0%
-        "sl_mult":    0.020,     # SL 2.0%
-        "base_mdd":   0.0218,
-        "max_hold_bars": 48,   # MAX HOLD 48봉 (4h x 48 = 192h)
+    # SHORT #2 — 전체 3위 | avg_calmar 41.3 (이상치 주의)
+    # 진입: SMA10<SMA20 AND Tenkan<Kijun AND STD상승 & Close<SMA(20)
+    # 해석: SMA(추세) + 이치모쿠(전환선/기준선) + STDDEV(변동성 확장) 3중 조건
+    "S2_SMA_ICHIMOKU_STDDEV": {
+        "id":             "S2_SMA_ICHIMOKU_STDDEV",
+        "symbol":         "BTC/USDT",
+        "timeframe":      "15m",
+        "direction":      "short",
+        "entry_fn":       "entry_short_sma_ichimoku_stddev",
+        "score":          19.36,
+        "survived_windows": 6,
+        "avg_calmar":     41.302,
+        "min_calmar":     1.204,
+        "leverage":       3,
+        "max_leverage":   5,
+        "tp_type":        "fixed",
+        "tp_mult":        0.05,      # TP 5.0%
+        "sl_mult":        0.04,      # SL 4.0%
+        "base_mdd":       0.04,
+        "max_hold_bars":  48,        # 48봉 (12시간)
     },
 
-    # #14 — XRP 4h LONG A등급, 수익률 236.43%
-    # 보고서: XRP 4h LONG 2_MOM_VWAP | OOS 0.8283 | Sharpe 16.40 | MDD -3.18%
-    # 레버리지: rec_lev=4, A_scale=0.75_trust=0.88
-    "XRP_4h_LONG_MOM_VWAP": {
-        "id":         "XRP_4h_LONG_MOM_VWAP",
-        "symbol":     "XRP/USDT",
-        "timeframe":  "4h",
-        "direction":  "long",
-        "indicators": ["MOM", "VWAP"],
-        "sharpe":     16.40,
-        "win_rate":   0.524,
-        "leverage":   4,
-        "max_leverage": 4,
-        "tp_type":    "fixed",
-        "tp_mult":    0.050,     # TP 5.0%
-        "sl_mult":    0.030,     # SL 3.0%
-        "base_mdd":   0.0318,
-        "max_hold_bars": 48,   # MAX HOLD 48봉 (4h x 48 = 192h)
+    # SHORT #3 — 전체 4위 | 횡보장 특화 역추세 (min_calmar 1.971 SHORT 최고)
+    # 진입: OBV<OBV_SMA(20) AND Close>KC_upper(20,2)
+    # 필터: ADX(14)≤25 (추세 약세 = 횡보장에서만 진입)
+    "S3_OBV_KELTNER_ADX_INV": {
+        "id":             "S3_OBV_KELTNER_ADX_INV",
+        "symbol":         "BTC/USDT",
+        "timeframe":      "15m",
+        "direction":      "short",
+        "entry_fn":       "entry_short_obv_keltner_adx_inv",
+        "score":          18.98,
+        "survived_windows": 5,
+        "avg_calmar":     20.451,
+        "min_calmar":     1.971,
+        "leverage":       3,
+        "max_leverage":   5,
+        "tp_type":        "fixed",
+        "tp_mult":        0.08,      # TP 8.0%
+        "sl_mult":        0.04,      # SL 4.0%
+        "base_mdd":       0.04,
+        "max_hold_bars":  48,        # 48봉 (12시간)
     },
 
-    # #15 — XRP 15m SHORT A등급, 수익률 144.82%
-    # 보고서: XRP 15m SHORT 2_CMF_CCI | OOS 0.8206 | Sharpe 17.85 | MDD -3.18%
-    # 레버리지: rec_lev=4, A_scale=0.75_trust=0.92
-    "XRP_15m_SHORT_CMF_CCI": {
-        "id":         "XRP_15m_SHORT_CMF_CCI",
-        "symbol":     "XRP/USDT",
-        "timeframe":  "15m",
-        "direction":  "short",
-        "indicators": ["CMF", "CCI"],
-        "sharpe":     17.85,
-        "win_rate":   0.577,
-        "leverage":   4,
-        "max_leverage": 4,
-        "tp_type":    "fixed",
-        "tp_mult":    0.050,     # TP 5.0%
-        "sl_mult":    0.030,     # SL 3.0%
-        "base_mdd":   0.0318,
-        "max_hold_bars": 48,   # MAX HOLD 48봉 (15m x 48 = 12h)
+    # SHORT #4 — 전체 6위 | 7윈도우 안정형, 2지표 조합 (단순 = 강건)
+    # 진입: Close>BB_upper(20,2) AND EMA5<EMA26<EMA50
+    # 필터: 없음 (2지표 조합)
+    "S4_BB_EMA_STACK": {
+        "id":             "S4_BB_EMA_STACK",
+        "symbol":         "BTC/USDT",
+        "timeframe":      "15m",
+        "direction":      "short",
+        "entry_fn":       "entry_short_bb_ema_stack",
+        "score":          18.73,
+        "survived_windows": 7,
+        "avg_calmar":     3.799,
+        "min_calmar":     1.055,
+        "leverage":       3,
+        "max_leverage":   5,
+        "tp_type":        "fixed",
+        "tp_mult":        0.08,      # TP 8.0%
+        "sl_mult":        0.03,      # SL 3.0%
+        "base_mdd":       0.03,
+        "max_hold_bars":  48,        # 48봉 (12시간)
     },
 
-    # #16 — XRP 4h SHORT A등급, MOM 단독, 수익률 116.00%
-    # 보고서: XRP 4h SHORT S_MOM | OOS 0.8141 | Sharpe 17.07 | MDD -3.18%
-    # 레버리지: rec_lev=3, A_scale=0.75_trust=0.88
-    "XRP_4h_SHORT_MOM": {
-        "id":         "XRP_4h_SHORT_MOM",
-        "symbol":     "XRP/USDT",
-        "timeframe":  "4h",
-        "direction":  "short",
-        "indicators": ["MOM"],
-        "sharpe":     17.07,
-        "win_rate":   0.474,
-        "leverage":   3,
-        "max_leverage": 3,
-        "tp_type":    "fixed",
-        "tp_mult":    0.050,     # TP 5.0%
-        "sl_mult":    0.030,     # SL 3.0%
-        "base_mdd":   0.0318,
-        "max_hold_bars": 16,   # MAX HOLD 16봉 (4h x 16 = 64h)
-    },
-
-    # #17 — XRP 1h SHORT A등급, AD 단독 (다른 TP/SL: 5.0/2.0)
-    # 보고서: XRP 1h SHORT S_AD (TP5/SL2) | 수익률 426.48%
-    # 레버리지: rec_lev=4, CSV에 TP5/SL2 없음 -> S_AD(TP5/SL3) rec_lev=4 적용
-    "XRP_1h_SHORT_AD_2": {
-        "id":         "XRP_1h_SHORT_AD_2",
-        "symbol":     "XRP/USDT",
-        "timeframe":  "1h",
-        "direction":  "short",
-        "indicators": ["AD"],
-        "sharpe":     30.00,
-        "win_rate":   0.510,
-        "leverage":   4,
-        "max_leverage": 4,
-        "tp_type":    "fixed",
-        "tp_mult":    0.050,     # TP 5.0%
-        "sl_mult":    0.020,     # SL 2.0%
-        "base_mdd":   0.0218,
-        "max_hold_bars": 48,   # MAX HOLD 48봉 (1h x 48 = 48h) — 보고서에 TP5/SL2 없음, S_AD(TP5/SL3) 값 적용
+    # SHORT #5 — 전체 7위 | #4 ATR 필터 추가 버전
+    # 진입: Close>BB_upper(20,2) AND EMA5<EMA26<EMA50
+    # 필터: ATR(14) ≤ ATR_SMA (변동성 평균 이하)
+    "S5_BB_EMA_STACK_ATR_INV": {
+        "id":             "S5_BB_EMA_STACK_ATR_INV",
+        "symbol":         "BTC/USDT",
+        "timeframe":      "15m",
+        "direction":      "short",
+        "entry_fn":       "entry_short_bb_ema_stack_atr_inv",
+        "score":          18.73,
+        "survived_windows": 7,
+        "avg_calmar":     3.799,
+        "min_calmar":     1.055,
+        "leverage":       3,
+        "max_leverage":   5,
+        "tp_type":        "fixed",
+        "tp_mult":        0.08,      # TP 8.0%
+        "sl_mult":        0.03,      # SL 3.0%
+        "base_mdd":       0.03,
+        "max_hold_bars":  48,        # 48봉 (12시간)
     },
 }
