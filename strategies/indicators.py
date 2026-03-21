@@ -1,5 +1,10 @@
 """
-strategies/indicators.py — WFA 전략별 복합 진입 조건 함수 (v5.3)
+strategies/indicators.py — WFA 전략별 복합 진입 조건 함수 (v5.4)
+
+[v5.4] 4시간봉 WFA 전략 진입 함수 10개 추가
+  - BTCUSDT_4h_WFA_Report.docx 기반
+  - 새 지표 헬퍼: CMF (Chaikin Money Flow)
+  - LONG 5개 + SHORT 5개 (4시간봉 전용)
 
 [v5.3] 1시간봉 WFA 전략 진입 함수 10개 추가
   - BTCUSDT_1h_WFA_Report.docx 기반
@@ -19,6 +24,7 @@ strategies/indicators.py — WFA 전략별 복합 진입 조건 함수 (v5.3)
        OBV, SMA, Ichimoku, STDDEV, Keltner, ATR
   5m:  + RSI, Stochastic(%K), CCI, VWAP(HLCC/4 SMA), AD(Accumulation/Distribution), MFI
   1h:  + ROC (Rate of Change)
+  4h:  + CMF (Chaikin Money Flow)
 """
 
 import pandas as pd
@@ -1224,6 +1230,297 @@ def entry_short_1h_cci_ema_stack(df: pd.DataFrame) -> bool:
 
 
 # ═══════════════════════════════════════════════════════════════
+# 4시간봉 추가 헬퍼: CMF
+# ═══════════════════════════════════════════════════════════════
+
+def _cmf(df: pd.DataFrame, period: int = 20):
+    """Chaikin Money Flow 계산, 최신값 반환"""
+    cmf = ta.cmf(df["high"], df["low"], df["close"], df["volume"], length=period)
+    if cmf is None or len(cmf) < period:
+        return None
+    val = float(cmf.iloc[-1])
+    if np.isnan(val):
+        return None
+    return val
+
+
+# ═══════════════════════════════════════════════════════════════
+# 4시간봉 LONG 전략 진입 함수 (5개)
+# ═══════════════════════════════════════════════════════════════
+
+def entry_long_4h_volume_vwap_stddev(df: pd.DataFrame) -> bool:
+    """
+    4h LONG #1: 3_VOLUME_VWAP_STDDEV (Score 23.02)
+    진입: Close>VWAP(20) AND STD↑&Close>SMA(20) AND Vol>SMA(20)*1.5
+    """
+    close = float(df["close"].iloc[-1])
+    vwap = _vwap_sma(df, 20)
+    if vwap is None:
+        return False
+    if close <= vwap:
+        return False
+
+    _, _, is_expanding = _stddev(df, 20)
+    if not is_expanding:
+        return False
+
+    sma20 = _sma(df, "close", 20)
+    if sma20 is None:
+        return False
+    if close <= sma20:
+        return False
+
+    vol_sma = ta.sma(df["volume"], length=20)
+    if vol_sma is None or len(vol_sma) < 20:
+        return False
+    vol_sma_val = float(vol_sma.iloc[-1])
+    if np.isnan(vol_sma_val):
+        return False
+    current_vol = float(df["volume"].iloc[-1])
+    if current_vol <= vol_sma_val * 1.5:
+        return False
+
+    return True
+
+
+def entry_long_4h_aroon_volume_adx_inv(df: pd.DataFrame) -> bool:
+    """
+    4h LONG #2: 3_AROON_VOLUME_ADX_INV (Score 23.01)
+    진입: AroonUp(25)>70 AND Vol>SMA(20)*1.5
+    필터: ADX(14)≤25
+    """
+    aroon_up, _ = _aroon(df, 25)
+    if aroon_up is None or aroon_up <= 70:
+        return False
+
+    vol_sma = ta.sma(df["volume"], length=20)
+    if vol_sma is None or len(vol_sma) < 20:
+        return False
+    vol_sma_val = float(vol_sma.iloc[-1])
+    if np.isnan(vol_sma_val):
+        return False
+    current_vol = float(df["volume"].iloc[-1])
+    if current_vol <= vol_sma_val * 1.5:
+        return False
+
+    adx = _adx_value(df, 14)
+    if adx is None or adx > 25:
+        return False
+
+    return True
+
+
+def entry_long_4h_atr_sig_volume_vwap(df: pd.DataFrame) -> bool:
+    """
+    4h LONG #3: 3_ATR_SIG_VOLUME_VWAP (Score 22.48)
+    진입: Close>VWAP(20) AND ATR>ATR_SMA(20) AND Vol>SMA(20)*1.5
+    """
+    close = float(df["close"].iloc[-1])
+    vwap = _vwap_sma(df, 20)
+    if vwap is None:
+        return False
+    if close <= vwap:
+        return False
+
+    atr_val, atr_sma_val = _atr(df, 14)
+    if atr_val is None or atr_sma_val is None:
+        return False
+    if atr_val <= atr_sma_val:
+        return False
+
+    vol_sma = ta.sma(df["volume"], length=20)
+    if vol_sma is None or len(vol_sma) < 20:
+        return False
+    vol_sma_val = float(vol_sma.iloc[-1])
+    if np.isnan(vol_sma_val):
+        return False
+    current_vol = float(df["volume"].iloc[-1])
+    if current_vol <= vol_sma_val * 1.5:
+        return False
+
+    return True
+
+
+def entry_long_4h_volume_ema_stack_atr_inv(df: pd.DataFrame) -> bool:
+    """
+    4h LONG #4: 3_VOLUME_EMA_STACK_ATR_INV (Score 21.90)
+    진입: EMA5>EMA26>EMA50 AND Vol>SMA(20)*1.5
+    필터: ATR(14)≤ATR_SMA(20)
+    """
+    ema5  = _ema(df, 5)
+    ema26 = _ema(df, 26)
+    ema50 = _ema(df, 50)
+    if ema5 is None or ema26 is None or ema50 is None:
+        return False
+    if not (ema5 > ema26 > ema50):
+        return False
+
+    vol_sma = ta.sma(df["volume"], length=20)
+    if vol_sma is None or len(vol_sma) < 20:
+        return False
+    vol_sma_val = float(vol_sma.iloc[-1])
+    if np.isnan(vol_sma_val):
+        return False
+    current_vol = float(df["volume"].iloc[-1])
+    if current_vol <= vol_sma_val * 1.5:
+        return False
+
+    atr_val, atr_sma_val = _atr(df, 14)
+    if atr_val is None or atr_sma_val is None:
+        return False
+    if atr_val > atr_sma_val:
+        return False
+
+    return True
+
+
+def entry_long_4h_volume_ema_stack(df: pd.DataFrame) -> bool:
+    """
+    4h LONG #5: 2_VOLUME_EMA_STACK (Score 21.90)
+    진입: EMA5>EMA26>EMA50 AND Vol>SMA(20)*1.5
+    """
+    ema5  = _ema(df, 5)
+    ema26 = _ema(df, 26)
+    ema50 = _ema(df, 50)
+    if ema5 is None or ema26 is None or ema50 is None:
+        return False
+    if not (ema5 > ema26 > ema50):
+        return False
+
+    vol_sma = ta.sma(df["volume"], length=20)
+    if vol_sma is None or len(vol_sma) < 20:
+        return False
+    vol_sma_val = float(vol_sma.iloc[-1])
+    if np.isnan(vol_sma_val):
+        return False
+    current_vol = float(df["volume"].iloc[-1])
+    if current_vol <= vol_sma_val * 1.5:
+        return False
+
+    return True
+
+
+# ═══════════════════════════════════════════════════════════════
+# 4시간봉 SHORT 전략 진입 함수 (5개)
+# ═══════════════════════════════════════════════════════════════
+
+def entry_short_4h_willr_atr_sig_mfi(df: pd.DataFrame) -> bool:
+    """
+    4h SHORT #1: 3_WILLR_ATR_SIG_MFI (Score 29.53)
+    진입: WR(14)>-20 AND ATR>ATR_SMA(20) AND MFI(14)>80
+    """
+    wr = _willr(df, 14)
+    if wr is None or wr <= -20:
+        return False
+
+    atr_val, atr_sma_val = _atr(df, 14)
+    if atr_val is None or atr_sma_val is None:
+        return False
+    if atr_val <= atr_sma_val:
+        return False
+
+    mfi_val = _mfi(df, 14)
+    if mfi_val is None or mfi_val <= 80:
+        return False
+
+    return True
+
+
+def entry_short_4h_willr_bb_cci(df: pd.DataFrame) -> bool:
+    """
+    4h SHORT #2: 3_WILLR_BB_CCI (Score 24.03)
+    진입: WR(14)>-20 AND Close>BB_hi(20,2) AND CCI(20)>+100
+    """
+    wr = _willr(df, 14)
+    if wr is None or wr <= -20:
+        return False
+
+    _, _, bb_upper = _bb(df, 20, 2.0)
+    if bb_upper is None:
+        return False
+    close = float(df["close"].iloc[-1])
+    if close <= bb_upper:
+        return False
+
+    cci_val = _cci(df, 20)
+    if cci_val is None or cci_val <= 100:
+        return False
+
+    return True
+
+
+def entry_short_4h_willr_bb(df: pd.DataFrame) -> bool:
+    """
+    4h SHORT #3: 2_WILLR_BB (Score 22.54)
+    진입: WR(14)>-20 AND Close>BB_hi(20,2)
+    """
+    wr = _willr(df, 14)
+    if wr is None or wr <= -20:
+        return False
+
+    _, _, bb_upper = _bb(df, 20, 2.0)
+    if bb_upper is None:
+        return False
+    close = float(df["close"].iloc[-1])
+    if close <= bb_upper:
+        return False
+
+    return True
+
+
+def entry_short_4h_willr_bb_atr_inv(df: pd.DataFrame) -> bool:
+    """
+    4h SHORT #4: 3_WILLR_BB_ATR_INV (Score 22.54)
+    진입: WR(14)>-20 AND Close>BB_hi(20,2)
+    필터: ATR(14)≤ATR_SMA(20)
+    """
+    wr = _willr(df, 14)
+    if wr is None or wr <= -20:
+        return False
+
+    _, _, bb_upper = _bb(df, 20, 2.0)
+    if bb_upper is None:
+        return False
+    close = float(df["close"].iloc[-1])
+    if close <= bb_upper:
+        return False
+
+    atr_val, atr_sma_val = _atr(df, 14)
+    if atr_val is None or atr_sma_val is None:
+        return False
+    if atr_val > atr_sma_val:
+        return False
+
+    return True
+
+
+def entry_short_4h_adx_cmf_vol_inv(df: pd.DataFrame) -> bool:
+    """
+    4h SHORT #5: 3_ADX_CMF_VOL_INV (Score 22.34)
+    진입: ADX(14)>25 AND CMF(20)<-0.1 AND Vol≤SMA(20)*1.5
+    """
+    adx = _adx_value(df, 14)
+    if adx is None or adx <= 25:
+        return False
+
+    cmf_val = _cmf(df, 20)
+    if cmf_val is None or cmf_val >= -0.1:
+        return False
+
+    vol_sma = ta.sma(df["volume"], length=20)
+    if vol_sma is None or len(vol_sma) < 20:
+        return False
+    vol_sma_val = float(vol_sma.iloc[-1])
+    if np.isnan(vol_sma_val):
+        return False
+    current_vol = float(df["volume"].iloc[-1])
+    if current_vol > vol_sma_val * 1.5:
+        return False
+
+    return True
+
+
+# ═══════════════════════════════════════════════════════════════
 # entry_fn 이름 → 함수 매핑
 # ═══════════════════════════════════════════════════════════════
 ENTRY_FN_MAP = {
@@ -1263,4 +1560,16 @@ ENTRY_FN_MAP = {
     "entry_short_1h_macd_stddev_vol_inv":    entry_short_1h_macd_stddev_vol_inv,
     "entry_short_1h_bb_mfi_adx_inv":         entry_short_1h_bb_mfi_adx_inv,
     "entry_short_1h_cci_ema_stack":          entry_short_1h_cci_ema_stack,
+    # 4h LONG 전략
+    "entry_long_4h_volume_vwap_stddev":      entry_long_4h_volume_vwap_stddev,
+    "entry_long_4h_aroon_volume_adx_inv":    entry_long_4h_aroon_volume_adx_inv,
+    "entry_long_4h_atr_sig_volume_vwap":     entry_long_4h_atr_sig_volume_vwap,
+    "entry_long_4h_volume_ema_stack_atr_inv": entry_long_4h_volume_ema_stack_atr_inv,
+    "entry_long_4h_volume_ema_stack":        entry_long_4h_volume_ema_stack,
+    # 4h SHORT 전략
+    "entry_short_4h_willr_atr_sig_mfi":      entry_short_4h_willr_atr_sig_mfi,
+    "entry_short_4h_willr_bb_cci":           entry_short_4h_willr_bb_cci,
+    "entry_short_4h_willr_bb":               entry_short_4h_willr_bb,
+    "entry_short_4h_willr_bb_atr_inv":       entry_short_4h_willr_bb_atr_inv,
+    "entry_short_4h_adx_cmf_vol_inv":        entry_short_4h_adx_cmf_vol_inv,
 }

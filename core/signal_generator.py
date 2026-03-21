@@ -1,11 +1,13 @@
 """
-core/signal_generator.py — 전략별 entry_fn → 크로스 감지 → 신호 생성 (v5.3)
+core/signal_generator.py — 전략별 entry_fn → 크로스 감지 → 신호 생성 (v5.4)
+
+[v5.4] 4시간봉 전략 추가 지원
+  - 5m/15m/1h/4h 4종 혼합 운용
+  - 5m=매 루프, 15m=3번째 루프, 1h=12번째 루프, 4h=48번째 루프마다 평가
+  - pre-fetch: BTC/USDT 5m + 15m + 1h + 4h 네 캐시 워밍
+  - 총 40개 전략 (5m×10 + 15m×10 + 1h×10 + 4h×10)
 
 [v5.3] 1시간봉 전략 추가 지원
-  - 5m/15m/1h 3종 혼합 운용
-  - 5m=매 루프, 15m=3번째 루프, 1h=12번째 루프마다 평가
-  - pre-fetch: BTC/USDT 5m + 15m + 1h 세 캐시 워밍
-
 [v5.2] 5분봉 전략 추가 지원
 [v5.0] WFA 전략 entry_fn 아키텍처로 전면 교체
 """
@@ -101,12 +103,12 @@ def _is_candle_boundary(timeframe: str, utc_now: datetime | None = None) -> bool
 
 def generate_all_signals() -> list[dict]:
     """
-    config.ALL_STRATEGIES에 등록된 전략만 감시/매매. (v5.3)
+    config.ALL_STRATEGIES에 등록된 전략만 감시/매매. (v5.4)
 
-    [v5.3 변경점]
-      - 5m + 15m + 1h 3종 혼합 운용
-      - 5m=매 루프, 15m=3루프마다, 1h=12루프마다
-      - pre-fetch: BTC/USDT 5m + 15m + 1h 세 캐시 워밍
+    [v5.4 변경점]
+      - 5m + 15m + 1h + 4h 4종 혼합 운용
+      - 5m=매 루프, 15m=3루프마다, 1h=12루프마다, 4h=48루프마다
+      - pre-fetch: BTC/USDT 5m + 15m + 1h + 4h 네 캐시 워밍
     """
     signals = []
     utc_now = datetime.now(timezone.utc)
