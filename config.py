@@ -1,66 +1,49 @@
 """
-config.py — 전략 목록, 자본배분, MIN_NOTIONAL, 수수료 설정 (v4.2)
+config.py — 전략 목록, 자본배분, MIN_NOTIONAL, 수수료 설정 (v5.0)
 
-[v4.2] 자본배분 균등화 + 여유 버퍼 확보
-  - BTC 40% / ETH 30% / XRP 30% → 각 30% (합계 90%)
-  - 10% 여유 버퍼: 기존 포지션 미실현 손실 시에도 신규 진입 가능
-  - 문제: 40+30+30=100% → 1개 심볼 손실 시 다른 심볼 마진 부족
-
-[v4.0] 백테스트 검증 전략으로 전면 교체
-  - 기존 13개 → 17개 (S등급 5, A등급 12)
-  - 5m 전략 전면 제거 (평균 OOS 0.4859, 수익률 -38.10%)
-  - ETH 전략 0→6개 추가 → 자본배분 재조정
-  - 변경 근거: TASK.md 참조
+[v5.0] WFA OOS 백테스트 보고서 기반 전면 교체
+  - 기존 17개 다심볼(BTC/ETH/XRP) 전략 → BTCUSDT 15m 전용 10개 전략
+  - LONG 5개 + SHORT 5개 (WFA 황금기준 통과 상위 전략)
+  - 자본배분: BTC/USDT 100% (단일 심볼)
+  - 충돌 해소: Score 기반 (survived_windows×2 + min_calmar×3 + ln(1+avg_calmar))
+  - 데이터 출처: BTCUSDT_15m_WFA_Report.docx (2026-03-21)
 """
 
-# ── 17개 전략 전체 목록 (S/A등급만) ────────────────────────
+# ── 10개 전략 전체 목록 (WFA Score 순위별 정렬) ─────────────
+# 충돌 시 이 리스트 순서(= Score 순위)대로 우선권 부여
 ALL_STRATEGIES = [
-    # S등급 (OOS >= 0.90) — 5개
-    "XRP_1h_SHORT_AD",              # OOS 0.9837, 수익률 943.59%
-    "ETH_1h_LONG_OBV_VWAP",        # OOS 0.9442, 수익률 769.25%
-    "XRP_1h_SHORT_VWAP_AD",        # OOS 0.9430, 수익률 770.37%
-    "BTC_1h_LONG_ADX",             # OOS 0.9110, 수익률 430.08%
-    "BTC_15m_LONG_STDDEV_AD_ADX",  # OOS 0.9017, 수익률 300.87%
-    # A등급 (OOS 0.80~0.89) — 12개
-    "BTC_1h_LONG_MOM",             # OOS 0.8871, 수익률 329.19%
-    "BTC_1h_LONG_ROC",             # OOS 0.8871, 수익률 329.19%
-    "BTC_15m_LONG_AROON_AD_ATR_SIG",  # OOS 0.8847, 수익률 220.92%
-    "BTC_1h_SHORT_OBV_MOM",        # OOS 0.8674, 수익률 231.60%
-    "ETH_1h_SHORT_CMF",            # OOS 0.8668, 수익률 254.37%
-    "BTC_1h_SHORT_OBV_VWAP",       # OOS 0.8649, 수익률 247.46%
-    "ETH_1h_LONG_OBV_VWAP_32",     # OOS 0.8418, 수익률  74.34%
-    "ETH_4h_LONG_ADX",             # OOS 0.8322, 수익률 237.64%
-    "XRP_4h_LONG_MOM_VWAP",        # OOS 0.8283, 수익률 236.43%
-    "XRP_15m_SHORT_CMF_CCI",       # OOS 0.8206, 수익률 144.82%
-    "XRP_4h_SHORT_MOM",            # OOS 0.8141, 수익률 116.00%
-    "XRP_1h_SHORT_AD_2",           # OOS 0.8100, 수익률 426.48%
+    # === SHORT 전략 (Score 상위) ===
+    "S1_WILLR_BB_OBV",              # Score 20.36, SHORT 1위, 전체 1위
+    # === LONG 전략 ===
+    "L1_WILLR_BB_EMA_STACK",        # Score 19.21, LONG 1위, 전체 2위
+    # === SHORT 전략 ===
+    "S2_SMA_ICHIMOKU_STDDEV",       # Score 19.36, SHORT 2위, 전체 3위
+    "S3_OBV_KELTNER_ADX_INV",       # Score 18.98, SHORT 3위, 전체 4위
+    # === LONG 전략 ===
+    "L2_ADX_WILLR_EMA_STACK",       # Score 18.73, LONG 2위, 전체 5위
+    # === SHORT 전략 ===
+    "S4_BB_EMA_STACK",              # Score 18.73, SHORT 4위, 전체 6위
+    "S5_BB_EMA_STACK_ATR_INV",      # Score 18.73, SHORT 5위, 전체 7위
+    # === LONG 전략 ===
+    "L3_AROON_DONCHIAN_VOL_INV",    # Score 15.97, LONG 3위, 전체 8위
+    "L4_EMA_MACD_PSAR",             # Score 15.64, LONG 4위, 전체 9위
+    "L5_EMA_PSAR_MOM",              # Score 15.53, LONG 5위, 전체 10위
 ]
 
 # ── 심볼별 최소 명목가치 (거래소 제약 + 여유) ─────────────────
 MIN_NOTIONAL = {
     "BTC/USDT": 100.0,
-    "ETH/USDT": 20.0,
-    "XRP/USDT": 5.0,
 }
 
 # ── 심볼별 자본 배분 비율 (합계 0.90) ────────────────────────
-# [v4.2] 균등 30% × 3 = 90%, 나머지 10%는 여유 버퍼
-#   이유: 100% 배분 시 기존 포지션 미실현 손실 → 신규 진입 마진 부족
-#   BTC 30% — 시가총액 1위, 유동성 최대
-#   ETH 30% — S등급 전략 보유, 유동성 양호
-#   XRP 30% — S등급 1위(OOS 0.9837) 전략 보유
-#   여유 10% — 미실현 손실 흡수 + 동시 진입 안전장치
+# [v5.0] BTC/USDT 단일 심볼 90%, 10% 여유 버퍼
 CAPITAL_ALLOCATION = {
-    "BTC/USDT": 0.30,
-    "ETH/USDT": 0.30,
-    "XRP/USDT": 0.30,
+    "BTC/USDT": 0.90,
 }
 
 # ── 수수료율 ─────────────────────────────────────────────────
 TAKER_FEE = {
     "BTC/USDT": 0.0005,   # 0.05%
-    "ETH/USDT": 0.0005,
-    "XRP/USDT": 0.0007,   # 0.07%
 }
 
 # ── Circuit Breaker 파라미터 ──────────────────────────────────
