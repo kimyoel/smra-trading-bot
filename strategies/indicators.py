@@ -1,5 +1,10 @@
 """
-strategies/indicators.py — WFA 전략별 복합 진입 조건 함수 (v5.5)
+strategies/indicators.py — WFA 전략별 복합 진입 조건 함수 (v5.5.1)
+
+[v5.5.1] _ichimoku() 헬퍼 Tenkan/Kijun 컬럼 매핑 버그 수정
+  - 기존: ISA_(Senkou Span A)를 Tenkan으로, ISB_(Senkou Span B)를 Kijun으로 잘못 매핑
+  - 수정: ITS_(Tenkan-sen 전환선), IKS_(Kijun-sen 기준선)으로 올바르게 변경
+  - 영향: Ichimoku 사용 5개 전략 진입 신호 정확도 개선
 
 [v5.5] ETHUSDT 5분봉 WFA 전략 진입 함수 10개 추가
   - ETHUSDT_5m_WFA_Report.docx 기반
@@ -206,7 +211,14 @@ def _obv(df: pd.DataFrame):
 
 
 def _ichimoku(df: pd.DataFrame):
-    """이치모쿠 Tenkan(9)/Kijun(26) 반환"""
+    """이치모쿠 Tenkan(9)/Kijun(26) 반환
+
+    pandas_ta 컬럼 매핑:
+      ITS_9  = Tenkan-sen (전환선, 9기간 고저 중간값)
+      IKS_26 = Kijun-sen  (기준선, 26기간 고저 중간값)
+      ISA_9  = Senkou Span A (선행스팬A) — 사용하지 않음
+      ISB_26 = Senkou Span B (선행스팬B) — 사용하지 않음
+    """
     ichimoku_result = ta.ichimoku(df["high"], df["low"], df["close"],
                                    tenkan=9, kijun=26, senkou=52)
     if ichimoku_result is None:
@@ -218,8 +230,10 @@ def _ichimoku(df: pd.DataFrame):
         ich_df = ichimoku_result
     if ich_df is None or ich_df.empty:
         return None, None
-    tenkan_col = [c for c in ich_df.columns if "ISA_" in c or "ITS_" in c]
-    kijun_col  = [c for c in ich_df.columns if "ISB_" in c or "IKS_" in c]
+    # ITS_ = Tenkan-sen (전환선), IKS_ = Kijun-sen (기준선)
+    # 주의: ISA_ = Senkou Span A, ISB_ = Senkou Span B — 이들은 Tenkan/Kijun이 아님!
+    tenkan_col = [c for c in ich_df.columns if c.startswith("ITS_")]
+    kijun_col  = [c for c in ich_df.columns if c.startswith("IKS_")]
     if not (tenkan_col and kijun_col):
         return None, None
     tenkan = float(ich_df[tenkan_col[0]].iloc[-1])
