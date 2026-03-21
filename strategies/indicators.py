@@ -1,5 +1,52 @@
 """
-strategies/indicators.py — WFA 전략별 복합 진입 조건 함수 (v5.5.1)
+strategies/indicators.py — WFA 전략별 복합 진입 조건 함수 (v6.2)
+
+[v6.2] XRPUSDT 4시간봉 WFA 전략 진입 함수 10개 추가
+  - XRPUSDT_4h_WFA_Report.docx 기반
+  - LONG 5개 + SHORT 5개 (XRP 4시간봉 전용)
+  - 1,957개 전략 → 필터 후 → Score 상위 5개씩 선별
+  - SHORT #3·#4·#5 동일 성과 — MOM+EMA_STACK 핵심
+  - 모든 지표 헬퍼는 기존과 공유 (Keltner, ATR, EMA, OBV, AD, Ichimoku, VWAP 등)
+
+[v6.1] XRPUSDT 1시간봉 WFA 전략 진입 함수 10개 추가
+  - XRPUSDT_1h_WFA_Report.docx 기반
+  - LONG 5개 + SHORT 5개 (XRP 1시간봉 전용)
+  - 3,234개 전략 → 필터 1,139개 → Score 상위 5개씩 선별
+  - SHORT 1위 surv=9 (Score 32.16), SHORT 2위 surv=12 (XRP 전체 최고 생존율)
+  - 모든 지표 헬퍼는 기존과 공유 (PSAR, MACD, Aroon, AD, VWAP 등 재사용)
+
+[v6.0] XRPUSDT 15분봉 WFA 전략 진입 함수 10개 추가
+  - XRPUSDT_15m_WFA_Report.docx 기반
+  - LONG 5개 + SHORT 5개 (XRP 15분봉 전용)
+  - 3,227개 전략 → 필터 460개 → Score 상위 5개씩 선별
+  - LONG 1·2·3위 surv=9 (XRP 15m 최고 생존율)
+  - 모든 지표 헬퍼는 기존과 공유 (STOCH, AROON, CMF, BB, Keltner 등 재사용)
+
+[v5.9] XRPUSDT 5분봉 WFA 전략 진입 함수 10개 추가
+  - XRPUSDT_5m_WFA_Report.docx 기반
+  - LONG 5개 + SHORT 5개 (XRP 5분봉 전용)
+  - 1,100개 전략 중 206개(IQR×3 제거 후) → Score 상위 5개씩 선별
+  - surv≥4 완화 적용 (최대 7윈도우)
+  - 모든 지표 헬퍼는 기존과 공유 (OBV, CCI, MFI, PSAR, Donchian 등 재사용)
+
+[v5.8] ETHUSDT 4시간봉 WFA 전략 진입 함수 10개 추가
+  - ETHUSDT_4h_WFA_Report.docx 기반
+  - LONG 5개 + SHORT 5개 (ETH 4시간봉 전용)
+  - 1,870개 전략 중 885개(IQR×3 제거 후) → Score 상위 5개씩 선별
+  - SHORT 1·2위 surv=11 (전체 데이터셋 최고 생존율)
+  - 모든 지표 헬퍼는 기존과 공유 (Ichimoku, VWAP, OBV, PSAR 등 재사용)
+
+[v5.7] ETHUSDT 1시간봉 WFA 전략 진입 함수 10개 추가
+  - ETHUSDT_1h_WFA_Report.docx 기반
+  - LONG 5개 + SHORT 5개 (ETH 1시간봉 전용)
+  - 3,231개 전략 중 1,216개(IQR×3 제거 후) → Score 상위 5개씩 선별
+  - 모든 지표 헬퍼는 기존과 공유 (ROC, CMF, PSAR 등 재사용)
+
+[v5.6] ETHUSDT 15분봉 WFA 전략 진입 함수 10개 추가
+  - ETHUSDT_15m_WFA_Report.docx 기반
+  - LONG 5개 + SHORT 5개 (ETH 15분봉 전용)
+  - 3,239개 전략 중 447개(IQR×3 제거 후) → Score 상위 5개씩 선별
+  - 모든 지표 헬퍼는 기존과 공유 (CMF, MFI, VWAP 등 재사용)
 
 [v5.5.1] _ichimoku() 헬퍼 Tenkan/Kijun 컬럼 매핑 버그 수정
   - 기존: ISA_(Senkou Span A)를 Tenkan으로, ISB_(Senkou Span B)를 Kijun으로 잘못 매핑
@@ -1796,6 +1843,1804 @@ def entry_short_eth5m_adx_psar_ichimoku(df: pd.DataFrame) -> bool:
 
 
 # ═══════════════════════════════════════════════════════════════
+# ETHUSDT 15분봉 LONG 전략 진입 함수 (5개)
+# ═══════════════════════════════════════════════════════════════
+
+def entry_long_eth15m_cci_mom_vol_inv(df: pd.DataFrame) -> bool:
+    """
+    ETH 15m LONG #1: 3_CCI_MOM_VOL_INV (Score 20.41)
+    진입: CCI(20)<-100 AND MOM(10)>0
+    필터: Vol≤SMA(20)*1.5
+    """
+    cci_val = _cci(df, 20)
+    if cci_val is None or cci_val >= -100:
+        return False
+
+    mom_val = _mom(df, 10)
+    if mom_val is None or mom_val <= 0:
+        return False
+
+    vol_sma = ta.sma(df["volume"], length=20)
+    if vol_sma is None or len(vol_sma) < 20:
+        return False
+    vol_sma_val = float(vol_sma.iloc[-1])
+    if np.isnan(vol_sma_val):
+        return False
+    current_vol = float(df["volume"].iloc[-1])
+    if current_vol > vol_sma_val * 1.5:
+        return False
+
+    return True
+
+
+def entry_long_eth15m_sma_macd_atr_inv(df: pd.DataFrame) -> bool:
+    """
+    ETH 15m LONG #2: 3_SMA_MACD_ATR_INV (Score 19.72)
+    진입: SMA10>SMA20 AND MACD>Sig(12,26,9)
+    필터: ATR(14)≤ATR_SMA
+    """
+    sma10 = _sma(df, "close", 10)
+    sma20 = _sma(df, "close", 20)
+    if sma10 is None or sma20 is None:
+        return False
+    if sma10 <= sma20:
+        return False
+
+    macd_val, signal_val, _ = _macd(df, 12, 26, 9)
+    if macd_val is None or signal_val is None:
+        return False
+    if macd_val <= signal_val:
+        return False
+
+    atr_val, atr_sma_val = _atr(df, 14)
+    if atr_val is None or atr_sma_val is None:
+        return False
+    if atr_val > atr_sma_val:
+        return False
+
+    return True
+
+
+def entry_long_eth15m_adx_bb_ema_stack(df: pd.DataFrame) -> bool:
+    """
+    ETH 15m LONG #3: 3_ADX_BB_EMA_STACK (Score 19.26)
+    진입: Close<BB_lo(20,2) AND EMA5>EMA26>EMA50
+    필터: ADX(14)>25
+    """
+    bb_lower, _, _ = _bb(df, 20, 2.0)
+    if bb_lower is None:
+        return False
+    close = float(df["close"].iloc[-1])
+    if close >= bb_lower:
+        return False
+
+    ema5  = _ema(df, 5)
+    ema26 = _ema(df, 26)
+    ema50 = _ema(df, 50)
+    if ema5 is None or ema26 is None or ema50 is None:
+        return False
+    if not (ema5 > ema26 > ema50):
+        return False
+
+    adx = _adx_value(df, 14)
+    if adx is None or adx <= 25:
+        return False
+
+    return True
+
+
+def entry_long_eth15m_willr_cmf_aroon(df: pd.DataFrame) -> bool:
+    """
+    ETH 15m LONG #4: 3_WILLR_CMF_AROON (Score 19.24)
+    진입: WR(14)<-80 AND CMF(20)>0.1 AND AroonUp(25)>70
+    """
+    wr = _willr(df, 14)
+    if wr is None or wr >= -80:
+        return False
+
+    cmf_val = _cmf(df, 20)
+    if cmf_val is None or cmf_val <= 0.1:
+        return False
+
+    aroon_up, _ = _aroon(df, 25)
+    if aroon_up is None or aroon_up <= 70:
+        return False
+
+    return True
+
+
+def entry_long_eth15m_sma_ichimoku_cmf(df: pd.DataFrame) -> bool:
+    """
+    ETH 15m LONG #5: 3_SMA_ICHIMOKU_CMF (Score 19.12)
+    진입: SMA10>SMA20 AND Tenkan>Kijun AND CMF(20)>0.1
+    """
+    sma10 = _sma(df, "close", 10)
+    sma20 = _sma(df, "close", 20)
+    if sma10 is None or sma20 is None:
+        return False
+    if sma10 <= sma20:
+        return False
+
+    tenkan, kijun = _ichimoku(df)
+    if tenkan is None or kijun is None:
+        return False
+    if tenkan <= kijun:
+        return False
+
+    cmf_val = _cmf(df, 20)
+    if cmf_val is None or cmf_val <= 0.1:
+        return False
+
+    return True
+
+
+# ═══════════════════════════════════════════════════════════════
+# ETHUSDT 15분봉 SHORT 전략 진입 함수 (5개)
+# ═══════════════════════════════════════════════════════════════
+
+def entry_short_eth15m_mfi_mom_vwap(df: pd.DataFrame) -> bool:
+    """
+    ETH 15m SHORT #1: 3_MFI_MOM_VWAP (Score 19.24)
+    진입: MFI(14)>80 AND MOM(10)<0 AND Close<VWAP(20)
+    """
+    mfi_val = _mfi(df, 14)
+    if mfi_val is None or mfi_val <= 80:
+        return False
+
+    mom_val = _mom(df, 10)
+    if mom_val is None or mom_val >= 0:
+        return False
+
+    close = float(df["close"].iloc[-1])
+    vwap = _vwap_sma(df, 20)
+    if vwap is None:
+        return False
+    if close >= vwap:
+        return False
+
+    return True
+
+
+def entry_short_eth15m_ema_atr_sig_ema_stack(df: pd.DataFrame) -> bool:
+    """
+    ETH 15m SHORT #2: 3_EMA_ATR_SIG_EMA_STACK (Score 19.12)
+    진입: EMA12<EMA26 AND EMA5<EMA26<EMA50
+    필터: ATR(14)>ATR_SMA
+    """
+    ema12 = _ema(df, 12)
+    ema26 = _ema(df, 26)
+    if ema12 is None or ema26 is None:
+        return False
+    if ema12 >= ema26:
+        return False
+
+    ema5  = _ema(df, 5)
+    ema50 = _ema(df, 50)
+    if ema5 is None or ema50 is None:
+        return False
+    if not (ema5 < ema26 < ema50):
+        return False
+
+    atr_val, atr_sma_val = _atr(df, 14)
+    if atr_val is None or atr_sma_val is None:
+        return False
+    if atr_val <= atr_sma_val:
+        return False
+
+    return True
+
+
+def entry_short_eth15m_sma_ichimoku_ema_stack(df: pd.DataFrame) -> bool:
+    """
+    ETH 15m SHORT #3: 3_SMA_ICHIMOKU_EMA_STACK (Score 18.71)
+    진입: SMA10<SMA20 AND Tenkan<Kijun AND EMA5<EMA26<EMA50
+    """
+    sma10 = _sma(df, "close", 10)
+    sma20 = _sma(df, "close", 20)
+    if sma10 is None or sma20 is None:
+        return False
+    if sma10 >= sma20:
+        return False
+
+    tenkan, kijun = _ichimoku(df)
+    if tenkan is None or kijun is None:
+        return False
+    if tenkan >= kijun:
+        return False
+
+    ema5  = _ema(df, 5)
+    ema26 = _ema(df, 26)
+    ema50 = _ema(df, 50)
+    if ema5 is None or ema26 is None or ema50 is None:
+        return False
+    if not (ema5 < ema26 < ema50):
+        return False
+
+    return True
+
+
+def entry_short_eth15m_adx_ichimoku_ema_stack(df: pd.DataFrame) -> bool:
+    """
+    ETH 15m SHORT #4: 3_ADX_ICHIMOKU_EMA_STACK (Score 18.29)
+    진입: Tenkan<Kijun AND EMA5<EMA26<EMA50
+    필터: ADX(14)>25
+    """
+    tenkan, kijun = _ichimoku(df)
+    if tenkan is None or kijun is None:
+        return False
+    if tenkan >= kijun:
+        return False
+
+    ema5  = _ema(df, 5)
+    ema26 = _ema(df, 26)
+    ema50 = _ema(df, 50)
+    if ema5 is None or ema26 is None or ema50 is None:
+        return False
+    if not (ema5 < ema26 < ema50):
+        return False
+
+    adx = _adx_value(df, 14)
+    if adx is None or adx <= 25:
+        return False
+
+    return True
+
+
+def entry_short_eth15m_cmf_mfi_vwap(df: pd.DataFrame) -> bool:
+    """
+    ETH 15m SHORT #5: 3_CMF_MFI_VWAP (Score 17.88)
+    진입: CMF(20)<-0.1 AND MFI(14)>80 AND Close<VWAP(20)
+    """
+    cmf_val = _cmf(df, 20)
+    if cmf_val is None or cmf_val >= -0.1:
+        return False
+
+    mfi_val = _mfi(df, 14)
+    if mfi_val is None or mfi_val <= 80:
+        return False
+
+    close = float(df["close"].iloc[-1])
+    vwap = _vwap_sma(df, 20)
+    if vwap is None:
+        return False
+    if close >= vwap:
+        return False
+
+    return True
+
+
+# ═══════════════════════════════════════════════════════════════
+# ETHUSDT 1시간봉 LONG 전략 진입 함수 (5개)
+# ═══════════════════════════════════════════════════════════════
+
+def entry_long_eth1h_sma_volume_adx_inv(df: pd.DataFrame) -> bool:
+    """
+    ETH 1h LONG #1: 3_SMA_VOLUME_ADX_INV (Score 22.77)
+    진입: SMA10>SMA20
+    필터: Vol>SMA(20)*1.5 AND ADX(14)≤25
+    """
+    sma10 = _sma(df, "close", 10)
+    sma20 = _sma(df, "close", 20)
+    if sma10 is None or sma20 is None:
+        return False
+    if sma10 <= sma20:
+        return False
+
+    vol_sma = ta.sma(df["volume"], length=20)
+    if vol_sma is None or len(vol_sma) < 20:
+        return False
+    vol_sma_val = float(vol_sma.iloc[-1])
+    if np.isnan(vol_sma_val):
+        return False
+    current_vol = float(df["volume"].iloc[-1])
+    if current_vol <= vol_sma_val * 1.5:
+        return False
+
+    adx = _adx_value(df, 14)
+    if adx is None or adx > 25:
+        return False
+
+    return True
+
+
+def entry_long_eth1h_macd_adx_roc(df: pd.DataFrame) -> bool:
+    """
+    ETH 1h LONG #2: 3_MACD_ADX_ROC (Score 22.62)
+    진입: MACD>Sig(12,26,9) AND ROC(10)>0%
+    필터: ADX(14)>25
+    """
+    macd_val, signal_val, _ = _macd(df, 12, 26, 9)
+    if macd_val is None or signal_val is None:
+        return False
+    if macd_val <= signal_val:
+        return False
+
+    roc_val = _roc(df, 10)
+    if roc_val is None or roc_val <= 0:
+        return False
+
+    adx = _adx_value(df, 14)
+    if adx is None or adx <= 25:
+        return False
+
+    return True
+
+
+def entry_long_eth1h_sma_stddev_adx_inv(df: pd.DataFrame) -> bool:
+    """
+    ETH 1h LONG #3: 3_SMA_STDDEV_ADX_INV (Score 22.58)
+    진입: SMA10>SMA20 AND STD↑&Close>SMA(20)
+    필터: ADX(14)≤25
+    """
+    sma10 = _sma(df, "close", 10)
+    sma20 = _sma(df, "close", 20)
+    if sma10 is None or sma20 is None:
+        return False
+    if sma10 <= sma20:
+        return False
+
+    _, _, is_expanding = _stddev(df, 20)
+    if not is_expanding:
+        return False
+
+    close = float(df["close"].iloc[-1])
+    if close <= sma20:
+        return False
+
+    adx = _adx_value(df, 14)
+    if adx is None or adx > 25:
+        return False
+
+    return True
+
+
+def entry_long_eth1h_sma_atr_sig_ema_stack(df: pd.DataFrame) -> bool:
+    """
+    ETH 1h LONG #4: 3_SMA_ATR_SIG_EMA_STACK (Score 22.14)
+    진입: SMA10>SMA20 AND EMA5>EMA26>EMA50
+    필터: ATR(14)>ATR_SMA
+    """
+    sma10 = _sma(df, "close", 10)
+    sma20 = _sma(df, "close", 20)
+    if sma10 is None or sma20 is None:
+        return False
+    if sma10 <= sma20:
+        return False
+
+    ema5  = _ema(df, 5)
+    ema26 = _ema(df, 26)
+    ema50 = _ema(df, 50)
+    if ema5 is None or ema26 is None or ema50 is None:
+        return False
+    if not (ema5 > ema26 > ema50):
+        return False
+
+    atr_val, atr_sma_val = _atr(df, 14)
+    if atr_val is None or atr_sma_val is None:
+        return False
+    if atr_val <= atr_sma_val:
+        return False
+
+    return True
+
+
+def entry_long_eth1h_obv_vwap_atr_inv(df: pd.DataFrame) -> bool:
+    """
+    ETH 1h LONG #5: 3_OBV_VWAP_ATR_INV (Score 21.73)
+    진입: OBV>OBV_SMA(20) AND Close>VWAP(20)
+    필터: ATR(14)≤ATR_SMA
+    """
+    obv_val, obv_sma_val = _obv(df)
+    if obv_val is None or obv_sma_val is None:
+        return False
+    if obv_val <= obv_sma_val:
+        return False
+
+    close = float(df["close"].iloc[-1])
+    vwap = _vwap_sma(df, 20)
+    if vwap is None:
+        return False
+    if close <= vwap:
+        return False
+
+    atr_val, atr_sma_val = _atr(df, 14)
+    if atr_val is None or atr_sma_val is None:
+        return False
+    if atr_val > atr_sma_val:
+        return False
+
+    return True
+
+
+# ═══════════════════════════════════════════════════════════════
+# ETHUSDT 1시간봉 SHORT 전략 진입 함수 (5개)
+# ═══════════════════════════════════════════════════════════════
+
+def entry_short_eth1h_psar_atr_sig_aroon(df: pd.DataFrame) -> bool:
+    """
+    ETH 1h SHORT #1: 3_PSAR_ATR_SIG_AROON (Score 24.90)
+    진입: SAR↓(0.02,0.2) AND AroonDn(25)>70
+    필터: ATR(14)>ATR_SMA
+    """
+    psar_dir = _psar(df)
+    if psar_dir != "short":
+        return False
+
+    _, aroon_down = _aroon(df, 25)
+    if aroon_down is None or aroon_down <= 70:
+        return False
+
+    atr_val, atr_sma_val = _atr(df, 14)
+    if atr_val is None or atr_sma_val is None:
+        return False
+    if atr_val <= atr_sma_val:
+        return False
+
+    return True
+
+
+def entry_short_eth1h_bb_cmf_volume(df: pd.DataFrame) -> bool:
+    """
+    ETH 1h SHORT #2: 3_BB_CMF_VOLUME (Score 24.58)
+    진입: Close>BB_hi(20,2) AND CMF(20)<-0.1
+    필터: Vol>SMA(20)*1.5
+    """
+    _, _, bb_upper = _bb(df, 20, 2.0)
+    if bb_upper is None:
+        return False
+    close = float(df["close"].iloc[-1])
+    if close <= bb_upper:
+        return False
+
+    cmf_val = _cmf(df, 20)
+    if cmf_val is None or cmf_val >= -0.1:
+        return False
+
+    vol_sma = ta.sma(df["volume"], length=20)
+    if vol_sma is None or len(vol_sma) < 20:
+        return False
+    vol_sma_val = float(vol_sma.iloc[-1])
+    if np.isnan(vol_sma_val):
+        return False
+    current_vol = float(df["volume"].iloc[-1])
+    if current_vol <= vol_sma_val * 1.5:
+        return False
+
+    return True
+
+
+def entry_short_eth1h_psar_stddev_atr_inv(df: pd.DataFrame) -> bool:
+    """
+    ETH 1h SHORT #3: 3_PSAR_STDDEV_ATR_INV (Score 24.11)
+    진입: SAR↓(0.02,0.2) AND STD↑&Close<SMA(20)
+    필터: ATR(14)≤ATR_SMA
+    """
+    psar_dir = _psar(df)
+    if psar_dir != "short":
+        return False
+
+    _, _, is_expanding = _stddev(df, 20)
+    if not is_expanding:
+        return False
+
+    close = float(df["close"].iloc[-1])
+    sma20 = _sma(df, "close", 20)
+    if sma20 is None:
+        return False
+    if close >= sma20:
+        return False
+
+    atr_val, atr_sma_val = _atr(df, 14)
+    if atr_val is None or atr_sma_val is None:
+        return False
+    if atr_val > atr_sma_val:
+        return False
+
+    return True
+
+
+def entry_short_eth1h_willr_adx_inv_vol_inv(df: pd.DataFrame) -> bool:
+    """
+    ETH 1h SHORT #4: 3_WILLR_ADX_INV_VOL_INV (Score 23.95)
+    진입: WR(14)>-20
+    필터: ADX(14)≤25 AND Vol≤SMA(20)*1.5
+    """
+    wr = _willr(df, 14)
+    if wr is None or wr <= -20:
+        return False
+
+    adx = _adx_value(df, 14)
+    if adx is None or adx > 25:
+        return False
+
+    vol_sma = ta.sma(df["volume"], length=20)
+    if vol_sma is None or len(vol_sma) < 20:
+        return False
+    vol_sma_val = float(vol_sma.iloc[-1])
+    if np.isnan(vol_sma_val):
+        return False
+    current_vol = float(df["volume"].iloc[-1])
+    if current_vol > vol_sma_val * 1.5:
+        return False
+
+    return True
+
+
+def entry_short_eth1h_psar_volume_stddev(df: pd.DataFrame) -> bool:
+    """
+    ETH 1h SHORT #5: 3_PSAR_VOLUME_STDDEV (Score 23.84)
+    진입: SAR↓(0.02,0.2) AND STD↑&Close<SMA(20)
+    필터: Vol>SMA(20)*1.5
+    """
+    psar_dir = _psar(df)
+    if psar_dir != "short":
+        return False
+
+    _, _, is_expanding = _stddev(df, 20)
+    if not is_expanding:
+        return False
+
+    close = float(df["close"].iloc[-1])
+    sma20 = _sma(df, "close", 20)
+    if sma20 is None:
+        return False
+    if close >= sma20:
+        return False
+
+    vol_sma = ta.sma(df["volume"], length=20)
+    if vol_sma is None or len(vol_sma) < 20:
+        return False
+    vol_sma_val = float(vol_sma.iloc[-1])
+    if np.isnan(vol_sma_val):
+        return False
+    current_vol = float(df["volume"].iloc[-1])
+    if current_vol <= vol_sma_val * 1.5:
+        return False
+
+    return True
+
+
+# ═══════════════════════════════════════════════════════════════
+# ETHUSDT 4시간봉 LONG 전략 진입 함수 (5개)
+# ETHUSDT_4h_WFA_Report.docx 기반 — 1,870개 중 IQR×3 후 885개 → Score 상위 5
+# ═══════════════════════════════════════════════════════════════
+
+def entry_long_eth4h_volume_stddev_adx_inv(df: pd.DataFrame) -> bool:
+    """
+    ETH 4h LONG #1: 3_VOLUME_STDDEV_ADX_INV (Score 29.73)
+    진입: STD↑ AND Close>SMA(20)
+    필터: Vol>SMA(20)×1.5 AND ADX(14)≤25
+    """
+    _, _, is_expanding = _stddev(df, 20)
+    if not is_expanding:
+        return False
+
+    sma20 = _sma(df, "close", 20)
+    if sma20 is None:
+        return False
+    close = float(df["close"].iloc[-1])
+    if close <= sma20:
+        return False
+
+    vol_sma = ta.sma(df["volume"], length=20)
+    if vol_sma is None or len(vol_sma) < 20:
+        return False
+    vol_sma_val = float(vol_sma.iloc[-1])
+    if np.isnan(vol_sma_val):
+        return False
+    current_vol = float(df["volume"].iloc[-1])
+    if current_vol <= vol_sma_val * 1.5:
+        return False
+
+    adx = _adx_value(df, 14)
+    if adx is None or adx > 25:
+        return False
+
+    return True
+
+
+def entry_long_eth4h_ichimoku_obv_vwap(df: pd.DataFrame) -> bool:
+    """
+    ETH 4h LONG #2: 3_ICHIMOKU_OBV_VWAP (Score 29.12)
+    진입: Tenkan>Kijun AND OBV>OBV_SMA(20) AND Close>VWAP(20)
+    """
+    tenkan, kijun = _ichimoku(df)
+    if tenkan is None or kijun is None:
+        return False
+    if tenkan <= kijun:
+        return False
+
+    obv_val, obv_sma_val = _obv(df)
+    if obv_val is None or obv_sma_val is None:
+        return False
+    if obv_val <= obv_sma_val:
+        return False
+
+    close = float(df["close"].iloc[-1])
+    vwap = _vwap_sma(df, 20)
+    if vwap is None:
+        return False
+    if close <= vwap:
+        return False
+
+    return True
+
+
+def entry_long_eth4h_macd_vwap_vol_inv(df: pd.DataFrame) -> bool:
+    """
+    ETH 4h LONG #3: 3_MACD_VWAP_VOL_INV (Score 29.03)
+    진입: MACD>Sig(12,26,9) AND Close>VWAP(20)
+    필터: Vol≤SMA(20)×1.5
+    """
+    macd_val, signal_val, _ = _macd(df, 12, 26, 9)
+    if macd_val is None or signal_val is None:
+        return False
+    if macd_val <= signal_val:
+        return False
+
+    close = float(df["close"].iloc[-1])
+    vwap = _vwap_sma(df, 20)
+    if vwap is None:
+        return False
+    if close <= vwap:
+        return False
+
+    vol_sma = ta.sma(df["volume"], length=20)
+    if vol_sma is None or len(vol_sma) < 20:
+        return False
+    vol_sma_val = float(vol_sma.iloc[-1])
+    if np.isnan(vol_sma_val):
+        return False
+    current_vol = float(df["volume"].iloc[-1])
+    if current_vol > vol_sma_val * 1.5:
+        return False
+
+    return True
+
+
+def entry_long_eth4h_ichimoku_vwap(df: pd.DataFrame) -> bool:
+    """
+    ETH 4h LONG #4: 2_ICHIMOKU_VWAP (Score 28.13)
+    진입: Tenkan>Kijun AND Close>VWAP(20)
+    """
+    tenkan, kijun = _ichimoku(df)
+    if tenkan is None or kijun is None:
+        return False
+    if tenkan <= kijun:
+        return False
+
+    close = float(df["close"].iloc[-1])
+    vwap = _vwap_sma(df, 20)
+    if vwap is None:
+        return False
+    if close <= vwap:
+        return False
+
+    return True
+
+
+def entry_long_eth4h_ichimoku_vwap_atr_inv(df: pd.DataFrame) -> bool:
+    """
+    ETH 4h LONG #5: 3_ICHIMOKU_VWAP_ATR_INV (Score 28.13)
+    진입: Tenkan>Kijun AND Close>VWAP(20)
+    필터: ATR(14)≤ATR_SMA
+    """
+    tenkan, kijun = _ichimoku(df)
+    if tenkan is None or kijun is None:
+        return False
+    if tenkan <= kijun:
+        return False
+
+    close = float(df["close"].iloc[-1])
+    vwap = _vwap_sma(df, 20)
+    if vwap is None:
+        return False
+    if close <= vwap:
+        return False
+
+    atr_val, atr_sma_val = _atr(df, 14)
+    if atr_val is None or atr_sma_val is None:
+        return False
+    if atr_val > atr_sma_val:
+        return False
+
+    return True
+
+
+# ═══════════════════════════════════════════════════════════════
+# ETHUSDT 4시간봉 SHORT 전략 진입 함수 (5개)
+# ═══════════════════════════════════════════════════════════════
+
+def entry_short_eth4h_ichimoku_vwap(df: pd.DataFrame) -> bool:
+    """
+    ETH 4h SHORT #1: 2_ICHIMOKU_VWAP (Score 29.09, surv=11 최고)
+    진입: Tenkan<Kijun AND Close<VWAP(20)
+    """
+    tenkan, kijun = _ichimoku(df)
+    if tenkan is None or kijun is None:
+        return False
+    if tenkan >= kijun:
+        return False
+
+    close = float(df["close"].iloc[-1])
+    vwap = _vwap_sma(df, 20)
+    if vwap is None:
+        return False
+    if close >= vwap:
+        return False
+
+    return True
+
+
+def entry_short_eth4h_ichimoku_vwap_atr_inv(df: pd.DataFrame) -> bool:
+    """
+    ETH 4h SHORT #2: 3_ICHIMOKU_VWAP_ATR_INV (Score 29.09, surv=11 최고)
+    진입: Tenkan<Kijun AND Close<VWAP(20)
+    필터: ATR(14)≤ATR_SMA
+    """
+    tenkan, kijun = _ichimoku(df)
+    if tenkan is None or kijun is None:
+        return False
+    if tenkan >= kijun:
+        return False
+
+    close = float(df["close"].iloc[-1])
+    vwap = _vwap_sma(df, 20)
+    if vwap is None:
+        return False
+    if close >= vwap:
+        return False
+
+    atr_val, atr_sma_val = _atr(df, 14)
+    if atr_val is None or atr_sma_val is None:
+        return False
+    if atr_val > atr_sma_val:
+        return False
+
+    return True
+
+
+def entry_short_eth4h_ichimoku_obv_vwap(df: pd.DataFrame) -> bool:
+    """
+    ETH 4h SHORT #3: 3_ICHIMOKU_OBV_VWAP (Score 27.14)
+    진입: Tenkan<Kijun AND OBV<OBV_SMA(20) AND Close<VWAP(20)
+    """
+    tenkan, kijun = _ichimoku(df)
+    if tenkan is None or kijun is None:
+        return False
+    if tenkan >= kijun:
+        return False
+
+    obv_val, obv_sma_val = _obv(df)
+    if obv_val is None or obv_sma_val is None:
+        return False
+    if obv_val >= obv_sma_val:
+        return False
+
+    close = float(df["close"].iloc[-1])
+    vwap = _vwap_sma(df, 20)
+    if vwap is None:
+        return False
+    if close >= vwap:
+        return False
+
+    return True
+
+
+def entry_short_eth4h_psar_adx_inv(df: pd.DataFrame) -> bool:
+    """
+    ETH 4h SHORT #4: 2_PSAR_ADX_INV (Score 26.84)
+    진입: SAR↓(0.02,0.2)
+    필터: ADX(14)≤25
+    """
+    psar_dir = _psar(df)
+    if psar_dir != "down":
+        return False
+
+    adx = _adx_value(df, 14)
+    if adx is None or adx > 25:
+        return False
+
+    return True
+
+
+def entry_short_eth4h_psar_adx_inv_atr_inv(df: pd.DataFrame) -> bool:
+    """
+    ETH 4h SHORT #5: 3_PSAR_ADX_INV_ATR_INV (Score 26.84)
+    진입: SAR↓(0.02,0.2)
+    필터: ADX(14)≤25 AND ATR(14)≤ATR_SMA
+    """
+    psar_dir = _psar(df)
+    if psar_dir != "down":
+        return False
+
+    adx = _adx_value(df, 14)
+    if adx is None or adx > 25:
+        return False
+
+    atr_val, atr_sma_val = _atr(df, 14)
+    if atr_val is None or atr_sma_val is None:
+        return False
+    if atr_val > atr_sma_val:
+        return False
+
+    return True
+
+
+# ═══════════════════════════════════════════════════════════════
+# XRPUSDT 5분봉 LONG 전략 진입 함수 (5개)
+# XRPUSDT_5m_WFA_Report.docx 기반 — 1,100개 중 IQR×3 후 206개 → Score 상위 5
+# surv≥4 완화 적용 (최대 7윈도우)
+# ═══════════════════════════════════════════════════════════════
+
+def entry_long_xrp5m_obv_cci_mfi(df: pd.DataFrame) -> bool:
+    """
+    XRP 5m LONG #1: 3_OBV_CCI_MFI (Score 23.22, surv=6)
+    진입: OBV>OBV_SMA(20) AND CCI(20)<-100 AND MFI(14)<20
+    """
+    obv_val, obv_sma_val = _obv(df)
+    if obv_val is None or obv_sma_val is None:
+        return False
+    if obv_val <= obv_sma_val:
+        return False
+
+    cci_val = _cci(df, 20)
+    if cci_val is None or cci_val >= -100:
+        return False
+
+    mfi_val = _mfi(df, 14)
+    if mfi_val is None or mfi_val >= 20:
+        return False
+
+    return True
+
+
+def entry_long_xrp5m_stoch_obv_mfi(df: pd.DataFrame) -> bool:
+    """
+    XRP 5m LONG #2: 3_STOCH_OBV_MFI (Score 21.97, surv=6)
+    진입: %K(14)<20 상향돌파 AND OBV>OBV_SMA(20) AND MFI(14)<20
+    """
+    stoch_k = _stoch_k(df, 14)
+    if stoch_k is None or stoch_k >= 20:
+        return False
+
+    obv_val, obv_sma_val = _obv(df)
+    if obv_val is None or obv_sma_val is None:
+        return False
+    if obv_val <= obv_sma_val:
+        return False
+
+    mfi_val = _mfi(df, 14)
+    if mfi_val is None or mfi_val >= 20:
+        return False
+
+    return True
+
+
+def entry_long_xrp5m_sma_ema_psar(df: pd.DataFrame) -> bool:
+    """
+    XRP 5m LONG #3: 3_SMA_EMA_PSAR (Score 20.49, surv=4)
+    진입: SMA10>SMA20 AND EMA12>EMA26 AND SAR↑(0.02,0.2)
+    """
+    sma10 = _sma(df, "close", 10)
+    sma20 = _sma(df, "close", 20)
+    if sma10 is None or sma20 is None:
+        return False
+    if sma10 <= sma20:
+        return False
+
+    ema12 = _ema(df, 12)
+    ema26 = _ema(df, 26)
+    if ema12 is None or ema26 is None:
+        return False
+    if ema12 <= ema26:
+        return False
+
+    psar_dir = _psar(df)
+    if psar_dir != "up":
+        return False
+
+    return True
+
+
+def entry_long_xrp5m_adx_ichimoku_volume(df: pd.DataFrame) -> bool:
+    """
+    XRP 5m LONG #4: 3_ADX_ICHIMOKU_VOLUME (Score 20.49, surv=5)
+    진입: Tenkan>Kijun
+    필터: ADX(14)>25 AND Vol>SMA(20)×1.5
+    """
+    tenkan, kijun = _ichimoku(df)
+    if tenkan is None or kijun is None:
+        return False
+    if tenkan <= kijun:
+        return False
+
+    adx = _adx_value(df, 14)
+    if adx is None or adx <= 25:
+        return False
+
+    vol_sma = ta.sma(df["volume"], length=20)
+    if vol_sma is None or len(vol_sma) < 20:
+        return False
+    vol_sma_val = float(vol_sma.iloc[-1])
+    if np.isnan(vol_sma_val):
+        return False
+    current_vol = float(df["volume"].iloc[-1])
+    if current_vol <= vol_sma_val * 1.5:
+        return False
+
+    return True
+
+
+def entry_long_xrp5m_sma_donchian_stddev(df: pd.DataFrame) -> bool:
+    """
+    XRP 5m LONG #5: 3_SMA_DONCHIAN_STDDEV (Score 20.29, surv=4)
+    진입: SMA10>SMA20 AND Close>DC_hi(20) AND STD↑&Close>SMA(20)
+    """
+    sma10 = _sma(df, "close", 10)
+    sma20 = _sma(df, "close", 20)
+    if sma10 is None or sma20 is None:
+        return False
+    if sma10 <= sma20:
+        return False
+
+    dc_hi, _ = _donchian(df, 20)
+    if dc_hi is None:
+        return False
+    close = float(df["close"].iloc[-1])
+    if close <= dc_hi:
+        return False
+
+    _, _, is_expanding = _stddev(df, 20)
+    if not is_expanding:
+        return False
+    if close <= sma20:
+        return False
+
+    return True
+
+
+# ═══════════════════════════════════════════════════════════════
+# XRPUSDT 5분봉 SHORT 전략 진입 함수 (5개)
+# ═══════════════════════════════════════════════════════════════
+
+def entry_short_xrp5m_sma_cci_adx_inv(df: pd.DataFrame) -> bool:
+    """
+    XRP 5m SHORT #1: 3_SMA_CCI_ADX_INV (Score 21.13, surv=6)
+    진입: SMA10<SMA20 AND CCI(20)>+100
+    필터: ADX(14)≤25
+    """
+    sma10 = _sma(df, "close", 10)
+    sma20 = _sma(df, "close", 20)
+    if sma10 is None or sma20 is None:
+        return False
+    if sma10 >= sma20:
+        return False
+
+    cci_val = _cci(df, 20)
+    if cci_val is None or cci_val <= 100:
+        return False
+
+    adx = _adx_value(df, 14)
+    if adx is None or adx > 25:
+        return False
+
+    return True
+
+
+def entry_short_xrp5m_rsi_willr_ema_stack(df: pd.DataFrame) -> bool:
+    """
+    XRP 5m SHORT #2: 3_RSI_WILLR_EMA_STACK (Score 20.94, surv=6)
+    진입: RSI(14)>70 AND WR(14)>-20 AND EMA5<EMA26<EMA50
+    """
+    rsi_val = _rsi(df, 14)
+    if rsi_val is None or rsi_val <= 70:
+        return False
+
+    wr_val = _willr(df, 14)
+    if wr_val is None or wr_val <= -20:
+        return False
+
+    ema5  = _ema(df, 5)
+    ema26 = _ema(df, 26)
+    ema50 = _ema(df, 50)
+    if ema5 is None or ema26 is None or ema50 is None:
+        return False
+    if not (ema5 < ema26 < ema50):
+        return False
+
+    return True
+
+
+def entry_short_xrp5m_sma_ema_volume(df: pd.DataFrame) -> bool:
+    """
+    XRP 5m SHORT #3: 3_SMA_EMA_VOLUME (Score 20.27, surv=6)
+    진입: SMA10<SMA20 AND EMA12<EMA26
+    필터: Vol>SMA(20)×1.5
+    """
+    sma10 = _sma(df, "close", 10)
+    sma20 = _sma(df, "close", 20)
+    if sma10 is None or sma20 is None:
+        return False
+    if sma10 >= sma20:
+        return False
+
+    ema12 = _ema(df, 12)
+    ema26 = _ema(df, 26)
+    if ema12 is None or ema26 is None:
+        return False
+    if ema12 >= ema26:
+        return False
+
+    vol_sma = ta.sma(df["volume"], length=20)
+    if vol_sma is None or len(vol_sma) < 20:
+        return False
+    vol_sma_val = float(vol_sma.iloc[-1])
+    if np.isnan(vol_sma_val):
+        return False
+    current_vol = float(df["volume"].iloc[-1])
+    if current_vol <= vol_sma_val * 1.5:
+        return False
+
+    return True
+
+
+def entry_short_xrp5m_obv_cci_mom(df: pd.DataFrame) -> bool:
+    """
+    XRP 5m SHORT #4: 3_OBV_CCI_MOM (Score 19.85, surv=5)
+    진입: OBV<OBV_SMA(20) AND CCI(20)>+100 AND MOM(10)<0
+    """
+    obv_val, obv_sma_val = _obv(df)
+    if obv_val is None or obv_sma_val is None:
+        return False
+    if obv_val >= obv_sma_val:
+        return False
+
+    cci_val = _cci(df, 20)
+    if cci_val is None or cci_val <= 100:
+        return False
+
+    mom_val = _mom(df, 10)
+    if mom_val is None or mom_val >= 0:
+        return False
+
+    return True
+
+
+def entry_short_xrp5m_obv_cci_roc(df: pd.DataFrame) -> bool:
+    """
+    XRP 5m SHORT #5: 3_OBV_CCI_ROC (Score 19.85, surv=5)
+    진입: OBV<OBV_SMA(20) AND CCI(20)>+100 AND ROC(10)<0%
+    """
+    obv_val, obv_sma_val = _obv(df)
+    if obv_val is None or obv_sma_val is None:
+        return False
+    if obv_val >= obv_sma_val:
+        return False
+
+    cci_val = _cci(df, 20)
+    if cci_val is None or cci_val <= 100:
+        return False
+
+    roc_val = _roc(df, 10)
+    if roc_val is None or roc_val >= 0:
+        return False
+
+    return True
+
+
+# ═══════════════════════════════════════════════════════════════
+# XRPUSDT 15분봉 WFA 전략 (v6.0) — XRPUSDT_15m_WFA_Report.docx
+# 3,227개 전략 → 필터 후 460개 → Score 상위 5개씩 선별
+# surv≥5, avg_calmar≥1.5, min_calmar≥0.4 기준
+# ═══════════════════════════════════════════════════════════════
+
+# ── XRP 15m LONG 전략 (5개) ─────────────────────────────────
+
+def entry_long_xrp15m_stoch_aroon(df: pd.DataFrame) -> bool:
+    """
+    XRP 15m LONG #1: 2_STOCH_AROON (Score 27.36, surv=9)
+    진입: %K(14)<20 AND AroonUp(25)>70
+    """
+    k_val = _stoch_k(df, 14)
+    if k_val is None or k_val >= 20:
+        return False
+
+    aroon_up, _ = _aroon(df, 25)
+    if aroon_up is None or aroon_up <= 70:
+        return False
+
+    return True
+
+
+def entry_long_xrp15m_stoch_willr_aroon(df: pd.DataFrame) -> bool:
+    """
+    XRP 15m LONG #2: 3_STOCH_WILLR_AROON (Score 27.36, surv=9)
+    진입: %K(14)<20 AND WR(14)<-80 AND AroonUp(25)>70
+    """
+    k_val = _stoch_k(df, 14)
+    if k_val is None or k_val >= 20:
+        return False
+
+    wr_val = _willr(df, 14)
+    if wr_val is None or wr_val >= -80:
+        return False
+
+    aroon_up, _ = _aroon(df, 25)
+    if aroon_up is None or aroon_up <= 70:
+        return False
+
+    return True
+
+
+def entry_long_xrp15m_stoch_aroon_atr_inv(df: pd.DataFrame) -> bool:
+    """
+    XRP 15m LONG #3: 3_STOCH_AROON_ATR_INV (Score 27.36, surv=9)
+    진입: %K(14)<20 AND AroonUp(25)>70
+    필터: ATR(14)≤ATR_SMA (저변동성)
+    """
+    k_val = _stoch_k(df, 14)
+    if k_val is None or k_val >= 20:
+        return False
+
+    aroon_up, _ = _aroon(df, 25)
+    if aroon_up is None or aroon_up <= 70:
+        return False
+
+    # ATR inverse filter: ATR ≤ ATR SMA (저변동성 구간)
+    atr_val, atr_sma_val = _atr(df, 14)
+    if atr_val is None or atr_sma_val is None:
+        return False
+    if atr_val > atr_sma_val:
+        return False
+
+    return True
+
+
+def entry_long_xrp15m_macd_aroon_donchian(df: pd.DataFrame) -> bool:
+    """
+    XRP 15m LONG #4: 3_MACD_AROON_DONCHIAN (Score 24.19, surv=7)
+    진입: MACD>Signal AND AroonUp(25)>70 AND Close>DC_hi(20)
+    """
+    macd_val, signal_val = _macd(df, 12, 26, 9)
+    if macd_val is None or signal_val is None or macd_val <= signal_val:
+        return False
+
+    aroon_up, _ = _aroon(df, 25)
+    if aroon_up is None or aroon_up <= 70:
+        return False
+
+    dc_hi, _ = _donchian(df, 20)
+    if dc_hi is None:
+        return False
+    close = float(df["close"].iloc[-1])
+    if close <= dc_hi:
+        return False
+
+    return True
+
+
+def entry_long_xrp15m_ema_ichimoku_volume(df: pd.DataFrame) -> bool:
+    """
+    XRP 15m LONG #5: 3_EMA_ICHIMOKU_VOLUME (Score 23.96, surv=8)
+    진입: EMA12>EMA26 AND Tenkan>Kijun
+    필터: Vol>SMA(20)×1.5
+    """
+    ema12 = _ema(df, 12)
+    ema26 = _ema(df, 26)
+    if ema12 is None or ema26 is None or ema12 <= ema26:
+        return False
+
+    tenkan, kijun = _ichimoku(df)
+    if tenkan is None or kijun is None or tenkan <= kijun:
+        return False
+
+    # Volume filter
+    vol = float(df["volume"].iloc[-1])
+    vol_sma = float(df["volume"].rolling(20).mean().iloc[-1])
+    if vol <= vol_sma * 1.5:
+        return False
+
+    return True
+
+
+# ── XRP 15m SHORT 전략 (5개) ────────────────────────────────
+
+def entry_short_xrp15m_sma_ema_atr_sig(df: pd.DataFrame) -> bool:
+    """
+    XRP 15m SHORT #1: 3_SMA_EMA_ATR_SIG (Score 24.55, surv=8)
+    진입: SMA10<SMA20 AND EMA12<EMA26
+    필터: ATR(14)>ATR_SMA (변동성 확대)
+    """
+    sma10 = _sma(df, "close", 10)
+    sma20 = _sma(df, "close", 20)
+    if sma10 is None or sma20 is None or sma10 >= sma20:
+        return False
+
+    ema12 = _ema(df, 12)
+    ema26 = _ema(df, 26)
+    if ema12 is None or ema26 is None or ema12 >= ema26:
+        return False
+
+    # ATR signal filter: ATR > ATR SMA (변동성 확대 구간)
+    atr_val, atr_sma_val = _atr(df, 14)
+    if atr_val is None or atr_sma_val is None:
+        return False
+    if atr_val <= atr_sma_val:
+        return False
+
+    return True
+
+
+def entry_short_xrp15m_sma_ema_stddev(df: pd.DataFrame) -> bool:
+    """
+    XRP 15m SHORT #2: 3_SMA_EMA_STDDEV (Score 24.20, surv=8)
+    진입: SMA10<SMA20 AND EMA12<EMA26 AND STD↑&Close<SMA(20)
+    """
+    sma10 = _sma(df, "close", 10)
+    sma20 = _sma(df, "close", 20)
+    if sma10 is None or sma20 is None or sma10 >= sma20:
+        return False
+
+    ema12 = _ema(df, 12)
+    ema26 = _ema(df, 26)
+    if ema12 is None or ema26 is None or ema12 >= ema26:
+        return False
+
+    # STDDEV 확대 + Close < SMA(20)
+    std_expanding, close_vs_sma = _stddev(df, 20)
+    if std_expanding is None:
+        return False
+    if not std_expanding:
+        return False
+    close = float(df["close"].iloc[-1])
+    sma20_val = _sma(df, "close", 20)
+    if sma20_val is None or close >= sma20_val:
+        return False
+
+    return True
+
+
+def entry_short_xrp15m_stoch_cmf_adx_inv(df: pd.DataFrame) -> bool:
+    """
+    XRP 15m SHORT #3: 3_STOCH_CMF_ADX_INV (Score 23.79, surv=7)
+    진입: %K(14)>80 AND CMF(20)<-0.1
+    필터: ADX(14)≤25 (횡보)
+    """
+    k_val = _stoch_k(df, 14)
+    if k_val is None or k_val <= 80:
+        return False
+
+    cmf_val = _cmf(df, 20)
+    if cmf_val is None or cmf_val >= -0.1:
+        return False
+
+    adx_val = _adx_value(df, 14)
+    if adx_val is None or adx_val > 25:
+        return False
+
+    return True
+
+
+def entry_short_xrp15m_rsi_bb_mfi(df: pd.DataFrame) -> bool:
+    """
+    XRP 15m SHORT #4: 3_RSI_BB_MFI (Score 23.71, surv=8)
+    진입: RSI(14)>70 AND Close>BB_hi(20,2) AND MFI(14)>80
+    """
+    rsi_val = _rsi(df, 14)
+    if rsi_val is None or rsi_val <= 70:
+        return False
+
+    bb_hi, _, _ = _bb(df, 20, 2.0)
+    if bb_hi is None:
+        return False
+    close = float(df["close"].iloc[-1])
+    if close <= bb_hi:
+        return False
+
+    mfi_val = _mfi(df, 14)
+    if mfi_val is None or mfi_val <= 80:
+        return False
+
+    return True
+
+
+def entry_short_xrp15m_bb_keltner_mfi(df: pd.DataFrame) -> bool:
+    """
+    XRP 15m SHORT #5: 3_BB_KELTNER_MFI (Score 23.47, surv=8)
+    진입: Close>BB_hi(20,2) AND Close>KC_hi(20,2) AND MFI(14)>80
+    """
+    bb_hi, _, _ = _bb(df, 20, 2.0)
+    if bb_hi is None:
+        return False
+    close = float(df["close"].iloc[-1])
+    if close <= bb_hi:
+        return False
+
+    kc_hi, _, _ = _keltner(df, 20, 2.0)
+    if kc_hi is None:
+        return False
+    if close <= kc_hi:
+        return False
+
+    mfi_val = _mfi(df, 14)
+    if mfi_val is None or mfi_val <= 80:
+        return False
+
+    return True
+
+
+# ═══════════════════════════════════════════════════════════════
+# XRPUSDT 1시간봉 WFA 전략 (v6.1) — XRPUSDT_1h_WFA_Report.docx
+# 3,234개 전략 → 필터 후 1,139개 → Score 상위 5개씩 선별
+# surv≥5, avg_calmar≥1.5, min_calmar≥0.4 기준
+# SHORT 1위 surv=9 Score 32.16, SHORT 2위 surv=12 (XRP 전체 최고)
+# ═══════════════════════════════════════════════════════════════
+
+# ── XRP 1h LONG 전략 (5개) ──────────────────────────────────
+
+def entry_long_xrp1h_psar_ema_stack_vol_inv(df: pd.DataFrame) -> bool:
+    """
+    XRP 1h LONG #1: 3_PSAR_EMA_STACK_VOL_INV (Score 26.97, surv=7)
+    진입: SAR↑ AND EMA5>EMA26>EMA50
+    필터: Vol≤SMA(20)×1.5 (저거래량 노이즈 제거)
+    """
+    psar_bull = _psar(df)
+    if psar_bull is None or not psar_bull:
+        return False
+
+    ema5  = _ema(df, 5)
+    ema26 = _ema(df, 26)
+    ema50 = _ema(df, 50)
+    if any(v is None for v in [ema5, ema26, ema50]):
+        return False
+    if not (ema5 > ema26 > ema50):
+        return False
+
+    # Volume inverse filter: Vol ≤ SMA(20)×1.5
+    vol = float(df["volume"].iloc[-1])
+    vol_sma = float(df["volume"].rolling(20).mean().iloc[-1])
+    if vol > vol_sma * 1.5:
+        return False
+
+    return True
+
+
+def entry_long_xrp1h_stoch_willr_atr_sig(df: pd.DataFrame) -> bool:
+    """
+    XRP 1h LONG #2: 3_STOCH_WILLR_ATR_SIG (Score 26.29, surv=6)
+    진입: %K(14)<20 AND WR(14)<-80
+    필터: ATR(14)>ATR_SMA (변동성 확대)
+    """
+    k_val = _stoch_k(df, 14)
+    if k_val is None or k_val >= 20:
+        return False
+
+    wr_val = _willr(df, 14)
+    if wr_val is None or wr_val >= -80:
+        return False
+
+    atr_val, atr_sma_val = _atr(df, 14)
+    if atr_val is None or atr_sma_val is None or atr_val <= atr_sma_val:
+        return False
+
+    return True
+
+
+def entry_long_xrp1h_stoch_atr_sig(df: pd.DataFrame) -> bool:
+    """
+    XRP 1h LONG #3: 2_STOCH_ATR_SIG (Score 26.29, surv=6)
+    진입: %K(14)<20
+    필터: ATR(14)>ATR_SMA (변동성 확대)
+    """
+    k_val = _stoch_k(df, 14)
+    if k_val is None or k_val >= 20:
+        return False
+
+    atr_val, atr_sma_val = _atr(df, 14)
+    if atr_val is None or atr_sma_val is None or atr_val <= atr_sma_val:
+        return False
+
+    return True
+
+
+def entry_long_xrp1h_psar_cmf_aroon(df: pd.DataFrame) -> bool:
+    """
+    XRP 1h LONG #4: 3_PSAR_CMF_AROON (Score 26.26, surv=7)
+    진입: SAR↑ AND CMF(20)>0.1 AND AroonUp(25)>70
+    """
+    psar_bull = _psar(df)
+    if psar_bull is None or not psar_bull:
+        return False
+
+    cmf_val = _cmf(df, 20)
+    if cmf_val is None or cmf_val <= 0.1:
+        return False
+
+    aroon_up, _ = _aroon(df, 25)
+    if aroon_up is None or aroon_up <= 70:
+        return False
+
+    return True
+
+
+def entry_long_xrp1h_sma_obv_atr_sig(df: pd.DataFrame) -> bool:
+    """
+    XRP 1h LONG #5: 3_SMA_OBV_ATR_SIG (Score 26.18, surv=8)
+    진입: SMA10>SMA20 AND OBV>OBV_SMA(20)
+    필터: ATR(14)>ATR_SMA (변동성 확대)
+    """
+    sma10 = _sma(df, "close", 10)
+    sma20 = _sma(df, "close", 20)
+    if sma10 is None or sma20 is None or sma10 <= sma20:
+        return False
+
+    obv_val, obv_sma_val = _obv(df)
+    if obv_val is None or obv_sma_val is None or obv_val <= obv_sma_val:
+        return False
+
+    atr_val, atr_sma_val = _atr(df, 14)
+    if atr_val is None or atr_sma_val is None or atr_val <= atr_sma_val:
+        return False
+
+    return True
+
+
+# ── XRP 1h SHORT 전략 (5개) ─────────────────────────────────
+
+def entry_short_xrp1h_macd_adx_aroon(df: pd.DataFrame) -> bool:
+    """
+    XRP 1h SHORT #1: 3_MACD_ADX_AROON (Score 32.16, surv=9)
+    진입: MACD<Signal AND AroonDn(25)>70
+    필터: ADX(14)>25 (추세 장세)
+    """
+    macd_val, signal_val = _macd(df, 12, 26, 9)
+    if macd_val is None or signal_val is None or macd_val >= signal_val:
+        return False
+
+    _, aroon_dn = _aroon(df, 25)
+    if aroon_dn is None or aroon_dn <= 70:
+        return False
+
+    adx_val = _adx_value(df, 14)
+    if adx_val is None or adx_val <= 25:
+        return False
+
+    return True
+
+
+def entry_short_xrp1h_sma_vwap_ad(df: pd.DataFrame) -> bool:
+    """
+    XRP 1h SHORT #2: 3_SMA_VWAP_AD (Score 30.10, surv=12 — XRP 전체 최고)
+    진입: SMA10<SMA20 AND Close<VWAP(20) AND AD<AD_SMA(20)
+    """
+    sma10 = _sma(df, "close", 10)
+    sma20 = _sma(df, "close", 20)
+    if sma10 is None or sma20 is None or sma10 >= sma20:
+        return False
+
+    vwap_val = _vwap_sma(df, 20)
+    if vwap_val is None:
+        return False
+    close = float(df["close"].iloc[-1])
+    if close >= vwap_val:
+        return False
+
+    ad_val, ad_sma_val = _ad(df)
+    if ad_val is None or ad_sma_val is None or ad_val >= ad_sma_val:
+        return False
+
+    return True
+
+
+def entry_short_xrp1h_sma_ad_ema_stack(df: pd.DataFrame) -> bool:
+    """
+    XRP 1h SHORT #3: 3_SMA_AD_EMA_STACK (Score 30.07, surv=11)
+    진입: SMA10<SMA20 AND AD<AD_SMA(20) AND EMA5<EMA26<EMA50
+    """
+    sma10 = _sma(df, "close", 10)
+    sma20 = _sma(df, "close", 20)
+    if sma10 is None or sma20 is None or sma10 >= sma20:
+        return False
+
+    ad_val, ad_sma_val = _ad(df)
+    if ad_val is None or ad_sma_val is None or ad_val >= ad_sma_val:
+        return False
+
+    ema5  = _ema(df, 5)
+    ema26 = _ema(df, 26)
+    ema50 = _ema(df, 50)
+    if any(v is None for v in [ema5, ema26, ema50]):
+        return False
+    if not (ema5 < ema26 < ema50):
+        return False
+
+    return True
+
+
+def entry_short_xrp1h_sma_atr_sig_ad(df: pd.DataFrame) -> bool:
+    """
+    XRP 1h SHORT #4: 3_SMA_ATR_SIG_AD (Score 29.98, surv=7)
+    진입: SMA10<SMA20 AND AD<AD_SMA(20)
+    필터: ATR(14)>ATR_SMA (변동성 확대)
+    """
+    sma10 = _sma(df, "close", 10)
+    sma20 = _sma(df, "close", 20)
+    if sma10 is None or sma20 is None or sma10 >= sma20:
+        return False
+
+    ad_val, ad_sma_val = _ad(df)
+    if ad_val is None or ad_sma_val is None or ad_val >= ad_sma_val:
+        return False
+
+    atr_val, atr_sma_val = _atr(df, 14)
+    if atr_val is None or atr_sma_val is None or atr_val <= atr_sma_val:
+        return False
+
+    return True
+
+
+def entry_short_xrp1h_macd_stddev_atr_inv(df: pd.DataFrame) -> bool:
+    """
+    XRP 1h SHORT #5: 3_MACD_STDDEV_ATR_INV (Score 29.76, surv=10)
+    진입: MACD<Signal AND STD↑&Close<SMA(20)
+    필터: ATR(14)≤ATR_SMA (저변동성)
+    """
+    macd_val, signal_val = _macd(df, 12, 26, 9)
+    if macd_val is None or signal_val is None or macd_val >= signal_val:
+        return False
+
+    std_expanding, _ = _stddev(df, 20)
+    if std_expanding is None or not std_expanding:
+        return False
+    close = float(df["close"].iloc[-1])
+    sma20_val = _sma(df, "close", 20)
+    if sma20_val is None or close >= sma20_val:
+        return False
+
+    atr_val, atr_sma_val = _atr(df, 14)
+    if atr_val is None or atr_sma_val is None or atr_val > atr_sma_val:
+        return False
+
+    return True
+
+
+# ═══════════════════════════════════════════════════════════════
+# XRPUSDT 4시간봉 LONG 전략 (5개) — XRPUSDT_4h_WFA_Report.docx
+# ═══════════════════════════════════════════════════════════════
+
+def entry_long_xrp4h_atr_sig_keltner_volume(df: pd.DataFrame) -> bool:
+    """
+    XRP 4h LONG #1: 3_ATR_SIG_KELTNER_VOLUME (Score 26.23, surv=6)
+    진입: Close<KC_lo(20,2)
+    필터: ATR(14)>ATR_SMA & Volume>SMA(20)×1.5
+    """
+    kc_upper, kc_lower = _keltner(df, 20, 2.0)
+    if kc_lower is None:
+        return False
+    close = float(df["close"].iloc[-1])
+    if close >= kc_lower:
+        return False
+
+    atr_val, atr_sma_val = _atr(df, 14)
+    if atr_val is None or atr_sma_val is None or atr_val <= atr_sma_val:
+        return False
+
+    vol = float(df["volume"].iloc[-1])
+    vol_sma = _sma(df, "volume", 20)
+    if vol_sma is None or vol <= vol_sma * 1.5:
+        return False
+
+    return True
+
+
+def entry_long_xrp4h_ema_obv_ad(df: pd.DataFrame) -> bool:
+    """
+    XRP 4h LONG #2: 3_EMA_OBV_AD (Score 25.71, surv=7)
+    진입: EMA12>EMA26 & OBV>OBV_SMA(20) & AD>AD_SMA(20)
+    """
+    ema12 = _ema(df, "close", 12)
+    ema26 = _ema(df, "close", 26)
+    if ema12 is None or ema26 is None or ema12 <= ema26:
+        return False
+
+    obv_val, obv_sma_val = _obv(df, 20)
+    if obv_val is None or obv_sma_val is None or obv_val <= obv_sma_val:
+        return False
+
+    ad_val, ad_sma_val = _ad(df, 20)
+    if ad_val is None or ad_sma_val is None or ad_val <= ad_sma_val:
+        return False
+
+    return True
+
+
+def entry_long_xrp4h_ichimoku_vwap_adx_inv(df: pd.DataFrame) -> bool:
+    """
+    XRP 4h LONG #3: 3_ICHIMOKU_VWAP_ADX_INV (Score 23.91, surv=6)
+    진입: Tenkan>Kijun & Close>VWAP(20)
+    필터: ADX(14)≤25
+    """
+    tenkan, kijun = _ichimoku(df, 9, 26)
+    if tenkan is None or kijun is None or tenkan <= kijun:
+        return False
+
+    close = float(df["close"].iloc[-1])
+    vwap = _vwap_sma(df, 20)
+    if vwap is None or close <= vwap:
+        return False
+
+    adx_val = _adx_value(df, 14)
+    if adx_val is None or adx_val > 25:
+        return False
+
+    return True
+
+
+def entry_long_xrp4h_ichimoku_vwap_ad(df: pd.DataFrame) -> bool:
+    """
+    XRP 4h LONG #4: 3_ICHIMOKU_VWAP_AD (Score 23.73, surv=6)
+    진입: Tenkan>Kijun & Close>VWAP(20) & AD>AD_SMA(20)
+    """
+    tenkan, kijun = _ichimoku(df, 9, 26)
+    if tenkan is None or kijun is None or tenkan <= kijun:
+        return False
+
+    close = float(df["close"].iloc[-1])
+    vwap = _vwap_sma(df, 20)
+    if vwap is None or close <= vwap:
+        return False
+
+    ad_val, ad_sma_val = _ad(df, 20)
+    if ad_val is None or ad_sma_val is None or ad_val <= ad_sma_val:
+        return False
+
+    return True
+
+
+def entry_long_xrp4h_ema_mom_vol_inv(df: pd.DataFrame) -> bool:
+    """
+    XRP 4h LONG #5: 3_EMA_MOM_VOL_INV (Score 23.64, surv=5)
+    진입: EMA12>EMA26 & MOM(10)>0
+    필터: Volume≤SMA(20)×1.5
+    """
+    ema12 = _ema(df, "close", 12)
+    ema26 = _ema(df, "close", 26)
+    if ema12 is None or ema26 is None or ema12 <= ema26:
+        return False
+
+    mom_val = _mom(df, 10)
+    if mom_val is None or mom_val <= 0:
+        return False
+
+    vol = float(df["volume"].iloc[-1])
+    vol_sma = _sma(df, "volume", 20)
+    if vol_sma is None or vol > vol_sma * 1.5:
+        return False
+
+    return True
+
+
+# ═══════════════════════════════════════════════════════════════
+# XRPUSDT 4시간봉 SHORT 전략 (5개) — XRPUSDT_4h_WFA_Report.docx
+# ═══════════════════════════════════════════════════════════════
+
+def entry_short_xrp4h_rsi_adx_inv_vol_inv(df: pd.DataFrame) -> bool:
+    """
+    XRP 4h SHORT #1: 3_RSI_ADX_INV_VOL_INV (Score 26.85, surv=6)
+    진입: RSI(14)>70
+    필터: ADX(14)≤25 & Volume≤SMA(20)×1.5
+    """
+    rsi_val = _rsi(df, 14)
+    if rsi_val is None or rsi_val <= 70:
+        return False
+
+    adx_val = _adx_value(df, 14)
+    if adx_val is None or adx_val > 25:
+        return False
+
+    vol = float(df["volume"].iloc[-1])
+    vol_sma = _sma(df, "volume", 20)
+    if vol_sma is None or vol > vol_sma * 1.5:
+        return False
+
+    return True
+
+
+def entry_short_xrp4h_obv_aroon_ema_stack(df: pd.DataFrame) -> bool:
+    """
+    XRP 4h SHORT #2: 3_OBV_AROON_EMA_STACK (Score 26.35, surv=5)
+    진입: OBV<OBV_SMA(20) & AroonDn(25)>70 & EMA5<EMA26<EMA50
+    """
+    obv_val, obv_sma_val = _obv(df, 20)
+    if obv_val is None or obv_sma_val is None or obv_val >= obv_sma_val:
+        return False
+
+    aroon_up, aroon_dn = _aroon(df, 25)
+    if aroon_dn is None or aroon_dn <= 70:
+        return False
+
+    ema5 = _ema(df, "close", 5)
+    ema26 = _ema(df, "close", 26)
+    ema50 = _ema(df, "close", 50)
+    if ema5 is None or ema26 is None or ema50 is None:
+        return False
+    if not (ema5 < ema26 < ema50):
+        return False
+
+    return True
+
+
+def entry_short_xrp4h_mom_ema_stack_atr_inv(df: pd.DataFrame) -> bool:
+    """
+    XRP 4h SHORT #3: 3_MOM_EMA_STACK_ATR_INV (Score 26.24, surv=5)
+    진입: MOM(10)<0 & EMA5<EMA26<EMA50
+    필터: ATR(14)≤ATR_SMA
+    """
+    mom_val = _mom(df, 10)
+    if mom_val is None or mom_val >= 0:
+        return False
+
+    ema5 = _ema(df, "close", 5)
+    ema26 = _ema(df, "close", 26)
+    ema50 = _ema(df, "close", 50)
+    if ema5 is None or ema26 is None or ema50 is None:
+        return False
+    if not (ema5 < ema26 < ema50):
+        return False
+
+    atr_val, atr_sma_val = _atr(df, 14)
+    if atr_val is None or atr_sma_val is None or atr_val > atr_sma_val:
+        return False
+
+    return True
+
+
+def entry_short_xrp4h_mom_roc_ema_stack(df: pd.DataFrame) -> bool:
+    """
+    XRP 4h SHORT #4: 3_MOM_ROC_EMA_STACK (Score 26.24, surv=5)
+    진입: MOM(10)<0 & ROC(10)<0% & EMA5<EMA26<EMA50
+    """
+    mom_val = _mom(df, 10)
+    if mom_val is None or mom_val >= 0:
+        return False
+
+    roc_val = _roc(df, 10)
+    if roc_val is None or roc_val >= 0:
+        return False
+
+    ema5 = _ema(df, "close", 5)
+    ema26 = _ema(df, "close", 26)
+    ema50 = _ema(df, "close", 50)
+    if ema5 is None or ema26 is None or ema50 is None:
+        return False
+    if not (ema5 < ema26 < ema50):
+        return False
+
+    return True
+
+
+def entry_short_xrp4h_mom_ema_stack(df: pd.DataFrame) -> bool:
+    """
+    XRP 4h SHORT #5: 2_MOM_EMA_STACK (Score 26.24, surv=5)
+    진입: MOM(10)<0 & EMA5<EMA26<EMA50
+    """
+    mom_val = _mom(df, 10)
+    if mom_val is None or mom_val >= 0:
+        return False
+
+    ema5 = _ema(df, "close", 5)
+    ema26 = _ema(df, "close", 26)
+    ema50 = _ema(df, "close", 50)
+    if ema5 is None or ema26 is None or ema50 is None:
+        return False
+    if not (ema5 < ema26 < ema50):
+        return False
+
+    return True
+
+
+# ═══════════════════════════════════════════════════════════════
 # entry_fn 이름 → 함수 매핑
 # ═══════════════════════════════════════════════════════════════
 ENTRY_FN_MAP = {
@@ -1859,4 +3704,88 @@ ENTRY_FN_MAP = {
     "entry_short_eth5m_adx_rsi_ema_stack":    entry_short_eth5m_adx_rsi_ema_stack,
     "entry_short_eth5m_aroon_cci_ema_stack":  entry_short_eth5m_aroon_cci_ema_stack,
     "entry_short_eth5m_adx_psar_ichimoku":    entry_short_eth5m_adx_psar_ichimoku,
+    # ETH 15m LONG 전략
+    "entry_long_eth15m_cci_mom_vol_inv":       entry_long_eth15m_cci_mom_vol_inv,
+    "entry_long_eth15m_sma_macd_atr_inv":      entry_long_eth15m_sma_macd_atr_inv,
+    "entry_long_eth15m_adx_bb_ema_stack":      entry_long_eth15m_adx_bb_ema_stack,
+    "entry_long_eth15m_willr_cmf_aroon":       entry_long_eth15m_willr_cmf_aroon,
+    "entry_long_eth15m_sma_ichimoku_cmf":      entry_long_eth15m_sma_ichimoku_cmf,
+    # ETH 15m SHORT 전략
+    "entry_short_eth15m_mfi_mom_vwap":         entry_short_eth15m_mfi_mom_vwap,
+    "entry_short_eth15m_ema_atr_sig_ema_stack": entry_short_eth15m_ema_atr_sig_ema_stack,
+    "entry_short_eth15m_sma_ichimoku_ema_stack": entry_short_eth15m_sma_ichimoku_ema_stack,
+    "entry_short_eth15m_adx_ichimoku_ema_stack": entry_short_eth15m_adx_ichimoku_ema_stack,
+    "entry_short_eth15m_cmf_mfi_vwap":         entry_short_eth15m_cmf_mfi_vwap,
+    # ETH 1h LONG 전략
+    "entry_long_eth1h_sma_volume_adx_inv":     entry_long_eth1h_sma_volume_adx_inv,
+    "entry_long_eth1h_macd_adx_roc":           entry_long_eth1h_macd_adx_roc,
+    "entry_long_eth1h_sma_stddev_adx_inv":     entry_long_eth1h_sma_stddev_adx_inv,
+    "entry_long_eth1h_sma_atr_sig_ema_stack":  entry_long_eth1h_sma_atr_sig_ema_stack,
+    "entry_long_eth1h_obv_vwap_atr_inv":       entry_long_eth1h_obv_vwap_atr_inv,
+    # ETH 1h SHORT 전략
+    "entry_short_eth1h_psar_atr_sig_aroon":    entry_short_eth1h_psar_atr_sig_aroon,
+    "entry_short_eth1h_bb_cmf_volume":         entry_short_eth1h_bb_cmf_volume,
+    "entry_short_eth1h_psar_stddev_atr_inv":   entry_short_eth1h_psar_stddev_atr_inv,
+    "entry_short_eth1h_willr_adx_inv_vol_inv": entry_short_eth1h_willr_adx_inv_vol_inv,
+    "entry_short_eth1h_psar_volume_stddev":    entry_short_eth1h_psar_volume_stddev,
+    # ETH 4h LONG 전략
+    "entry_long_eth4h_volume_stddev_adx_inv":     entry_long_eth4h_volume_stddev_adx_inv,
+    "entry_long_eth4h_ichimoku_obv_vwap":         entry_long_eth4h_ichimoku_obv_vwap,
+    "entry_long_eth4h_macd_vwap_vol_inv":         entry_long_eth4h_macd_vwap_vol_inv,
+    "entry_long_eth4h_ichimoku_vwap":             entry_long_eth4h_ichimoku_vwap,
+    "entry_long_eth4h_ichimoku_vwap_atr_inv":     entry_long_eth4h_ichimoku_vwap_atr_inv,
+    # ETH 4h SHORT 전략
+    "entry_short_eth4h_ichimoku_vwap":            entry_short_eth4h_ichimoku_vwap,
+    "entry_short_eth4h_ichimoku_vwap_atr_inv":    entry_short_eth4h_ichimoku_vwap_atr_inv,
+    "entry_short_eth4h_ichimoku_obv_vwap":        entry_short_eth4h_ichimoku_obv_vwap,
+    "entry_short_eth4h_psar_adx_inv":             entry_short_eth4h_psar_adx_inv,
+    "entry_short_eth4h_psar_adx_inv_atr_inv":     entry_short_eth4h_psar_adx_inv_atr_inv,
+    # XRP 5m LONG 전략
+    "entry_long_xrp5m_obv_cci_mfi":              entry_long_xrp5m_obv_cci_mfi,
+    "entry_long_xrp5m_stoch_obv_mfi":            entry_long_xrp5m_stoch_obv_mfi,
+    "entry_long_xrp5m_sma_ema_psar":             entry_long_xrp5m_sma_ema_psar,
+    "entry_long_xrp5m_adx_ichimoku_volume":       entry_long_xrp5m_adx_ichimoku_volume,
+    "entry_long_xrp5m_sma_donchian_stddev":       entry_long_xrp5m_sma_donchian_stddev,
+    # XRP 5m SHORT 전략
+    "entry_short_xrp5m_sma_cci_adx_inv":          entry_short_xrp5m_sma_cci_adx_inv,
+    "entry_short_xrp5m_rsi_willr_ema_stack":      entry_short_xrp5m_rsi_willr_ema_stack,
+    "entry_short_xrp5m_sma_ema_volume":           entry_short_xrp5m_sma_ema_volume,
+    "entry_short_xrp5m_obv_cci_mom":              entry_short_xrp5m_obv_cci_mom,
+    "entry_short_xrp5m_obv_cci_roc":              entry_short_xrp5m_obv_cci_roc,
+    # XRP 15m LONG 전략
+    "entry_long_xrp15m_stoch_aroon":               entry_long_xrp15m_stoch_aroon,
+    "entry_long_xrp15m_stoch_willr_aroon":         entry_long_xrp15m_stoch_willr_aroon,
+    "entry_long_xrp15m_stoch_aroon_atr_inv":       entry_long_xrp15m_stoch_aroon_atr_inv,
+    "entry_long_xrp15m_macd_aroon_donchian":       entry_long_xrp15m_macd_aroon_donchian,
+    "entry_long_xrp15m_ema_ichimoku_volume":       entry_long_xrp15m_ema_ichimoku_volume,
+    # XRP 15m SHORT 전략
+    "entry_short_xrp15m_sma_ema_atr_sig":          entry_short_xrp15m_sma_ema_atr_sig,
+    "entry_short_xrp15m_sma_ema_stddev":           entry_short_xrp15m_sma_ema_stddev,
+    "entry_short_xrp15m_stoch_cmf_adx_inv":        entry_short_xrp15m_stoch_cmf_adx_inv,
+    "entry_short_xrp15m_rsi_bb_mfi":               entry_short_xrp15m_rsi_bb_mfi,
+    "entry_short_xrp15m_bb_keltner_mfi":           entry_short_xrp15m_bb_keltner_mfi,
+    # XRP 1h LONG 전략
+    "entry_long_xrp1h_psar_ema_stack_vol_inv":     entry_long_xrp1h_psar_ema_stack_vol_inv,
+    "entry_long_xrp1h_stoch_willr_atr_sig":        entry_long_xrp1h_stoch_willr_atr_sig,
+    "entry_long_xrp1h_stoch_atr_sig":              entry_long_xrp1h_stoch_atr_sig,
+    "entry_long_xrp1h_psar_cmf_aroon":             entry_long_xrp1h_psar_cmf_aroon,
+    "entry_long_xrp1h_sma_obv_atr_sig":            entry_long_xrp1h_sma_obv_atr_sig,
+    # XRP 1h SHORT 전략
+    "entry_short_xrp1h_macd_adx_aroon":            entry_short_xrp1h_macd_adx_aroon,
+    "entry_short_xrp1h_sma_vwap_ad":               entry_short_xrp1h_sma_vwap_ad,
+    "entry_short_xrp1h_sma_ad_ema_stack":          entry_short_xrp1h_sma_ad_ema_stack,
+    "entry_short_xrp1h_sma_atr_sig_ad":            entry_short_xrp1h_sma_atr_sig_ad,
+    "entry_short_xrp1h_macd_stddev_atr_inv":       entry_short_xrp1h_macd_stddev_atr_inv,
+    # XRP 4h LONG 전략
+    "entry_long_xrp4h_atr_sig_keltner_volume":     entry_long_xrp4h_atr_sig_keltner_volume,
+    "entry_long_xrp4h_ema_obv_ad":                 entry_long_xrp4h_ema_obv_ad,
+    "entry_long_xrp4h_ichimoku_vwap_adx_inv":      entry_long_xrp4h_ichimoku_vwap_adx_inv,
+    "entry_long_xrp4h_ichimoku_vwap_ad":           entry_long_xrp4h_ichimoku_vwap_ad,
+    "entry_long_xrp4h_ema_mom_vol_inv":            entry_long_xrp4h_ema_mom_vol_inv,
+    # XRP 4h SHORT 전략
+    "entry_short_xrp4h_rsi_adx_inv_vol_inv":       entry_short_xrp4h_rsi_adx_inv_vol_inv,
+    "entry_short_xrp4h_obv_aroon_ema_stack":       entry_short_xrp4h_obv_aroon_ema_stack,
+    "entry_short_xrp4h_mom_ema_stack_atr_inv":     entry_short_xrp4h_mom_ema_stack_atr_inv,
+    "entry_short_xrp4h_mom_roc_ema_stack":         entry_short_xrp4h_mom_roc_ema_stack,
+    "entry_short_xrp4h_mom_ema_stack":             entry_short_xrp4h_mom_ema_stack,
 }

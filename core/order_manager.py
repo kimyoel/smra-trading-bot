@@ -1,7 +1,17 @@
 """
-core/order_manager.py — ccxt futures 주문 발행 (v2.17)
+core/order_manager.py — ccxt futures 주문 발행 (v3.1 — Hedge Mode 방향별 주문 관리)
 
 버그 수정 히스토리:
+  v3.1 :
+  [FIX7] cancel_all_open_orders() Hedge Mode 방향별 필터링 구현
+         - pos_side 지정 시 해당 positionSide의 주문만 개별 취소
+         - 반대 방향 포지션의 TP/SL 보존 (LONG↔SHORT 독립)
+         - Algo Order: 개별 조회 후 positionSide 매칭 → algoId 단위 취소
+         - 일반 주문: fetch_open_orders 조회 후 positionSide 매칭 취소
+  [FIX8] update_atr_tp_sl() 방향별 cancel 호출
+         - cancel_all_open_orders(symbol, pos_side=direction) 변경
+         - 동일 심볼 반대 방향 TP/SL 삭제 방지
+  v3.0 :
   v2.13 : ccxt 4.5.43 + triggerPrice → /fapi/v1/algoOrder 자동 라우팅 (-4120 해결)
   v2.14 :
   [FIX1] cancel_all_open_orders(): 일반 주문 + Algo Order 동시 취소
@@ -171,20 +181,17 @@ def _place_algo_order(
     order_type: str,
     stop_price: float,
     amount: float,
-    direction: str = "long",   # [v2.15] "long" | "short"
+    direction: str = "long",   # "long" | "short"
 ) -> dict:
     """
-    TP/SL 주문을 Binance Algo Order API로 전송 (v2.13+).
+    TP/SL 주문을 Binance Algo Order API로 전송 (v3.0 Hedge Mode).
 
-    2025-12-09 바이낸스 변경 후 TAKE_PROFIT_MARKET / STOP_MARKET은
-    POST /fapi/v1/algoOrder 엔드포인트만 허용. ccxt 4.5.43+에서
-    triggerPrice 파라미터 사용 시 자동으로 fapiPrivatePostAlgoOrder 라우팅.
-
-    [v2.15] One-way 모드 방향별 side:
-        LONG 포지션 청산 → side="sell" (TP/SL 모두)
-        SHORT 포지션 청산 → side="buy"  (TP/SL 모두)
+    [v3.0] Hedge Mode:
+        positionSide="LONG" / "SHORT" 명시 → 해당 포지션에만 TP/SL 적용
+        positionSide가 One-way 모드의 reduce-only 역할 대체
     """
-    close_side = "sell" if direction == "long" else "buy"
+    close_side    = "sell" if direction == "long" else "buy"
+    position_side = "LONG" if direction == "long" else "SHORT"
     return exchange.create_order(
         symbol=symbol,
         type=order_type,
@@ -192,23 +199,21 @@ def _place_algo_order(
         amount=amount,
         price=None,
         params={
-            "triggerPrice": str(round(stop_price, 2)),
-            "workingType":  "MARK_PRICE",
-            "timeInForce":  "GTE_GTC",
-            "reduceOnly":   True,
+            "positionSide": position_side,
+            "triggerPrice":  str(round(stop_price, 2)),
+            "workingType":   "MARK_PRICE",
+            "timeInForce":   "GTE_GTC",
         },
     )
 
 
 def _emergency_close(symbol: str, amount: float, direction: str = "long") -> None:
     """
-    TP/SL 등록 실패 시 긴급 시장가 청산. (v2.15: direction 파라미터 추가)
+    TP/SL 등록 실패 시 긴급 시장가 청산. (v3.0 Hedge Mode: positionSide 명시)
     무방어 포지션 방지용 안전장치.
-
-    LONG 포지션 긴급청산 → side="sell"
-    SHORT 포지션 긴급청산 → side="buy"
     """
-    close_side = "sell" if direction == "long" else "buy"
+    close_side    = "sell" if direction == "long" else "buy"
+    position_side = "LONG" if direction == "long" else "SHORT"
     try:
         size = _round_amount(symbol, amount)
         if size <= 0:
@@ -219,29 +224,20 @@ def _emergency_close(symbol: str, amount: float, direction: str = "long") -> Non
             type="MARKET",
             side=close_side,
             amount=size,
-            params={"reduceOnly": True}
+            params={"positionSide": position_side}
         )
-        logger.warning(f"[ORDER] ⚠️ 긴급 청산 완료: {symbol} {size} dir={direction} (TP/SL 등록 실패 대응)")
+        logger.warning(f"[ORDER] ⚠️ 긴급 청산 완료: {symbol} [{position_side}] {size} (TP/SL 등록 실패 대응)")
     except Exception as e:
-        logger.error(f"[ORDER] 긴급 청산 실패 {symbol}: {e} — 수동 확인 필요!")
+        logger.error(f"[ORDER] 긴급 청산 실패 {symbol} [{position_side}]: {e} — 수동 확인 필요!")
 
 
 def execute_order(sig: dict) -> bool:
     """
-    진입 주문 + TP + SL 발행. (v2.15: LONG/SHORT 방향 지원)
+    진입 주문 + TP + SL 발행. (v3.0: Hedge Mode positionSide 적용)
 
-    1. 레버리지 설정
-    2. 수량 계산 (precision + min_qty + min_notional 체크)
-    3. SL/강제청산 가격 안전 체크 (v2.14, LONG만)
-    4. MARKET 진입 주문 (LONG=buy / SHORT=sell)
-    5. TAKE_PROFIT_MARKET (→ /fapi/v1/algoOrder)
-    6. STOP_MARKET        (→ /fapi/v1/algoOrder)
-    * TP/SL 실패 시 → 즉시 긴급 청산 후 False 반환
-
-    [v2.15] strategy에 direction 필드 추가로 숏 지원:
-        direction="long"  (기본값): BUY 진입, SELL TP/SL
-        direction="short": SELL 진입, BUY TP/SL
-    현재 모든 전략은 direction 미설정 → "long" 기본값 → 기존 동작 완전 유지
+    [v3.0] Hedge Mode:
+        모든 주문에 positionSide="LONG"/"SHORT" 명시
+        → 동일 심볼에 LONG + SHORT 독립 포지션 가능
     """
     strategy    = sig["strategy"]
     symbol      = strategy["symbol"]
@@ -292,12 +288,14 @@ def execute_order(sig: dict) -> bool:
             f"자본기준 TP: {(tp/entry-1)*100*leverage:+.1f}% / SL: {(sl/entry-1)*100*leverage:+.1f}%"
         )
 
-        # 4. MARKET 진입 주문
+        # 4. MARKET 진입 주문 (v3.0: positionSide 추가)
+        position_side = "LONG" if direction == "long" else "SHORT"
         entry_order = exchange.create_order(
             symbol=symbol,
             type="MARKET",
             side=entry_side,   # LONG=buy / SHORT=sell
             amount=amount,
+            params={"positionSide": position_side},
         )
         entry_order_id = entry_order.get("id", "N/A")
         logger.info(f"[ORDER] 진입 주문 체결: {entry_order_id} ({dir_label})")
@@ -393,57 +391,106 @@ def execute_order(sig: dict) -> bool:
         return False
 
 
-def cancel_all_open_orders(symbol: str) -> None:
+def cancel_all_open_orders(symbol: str, pos_side: str = "") -> None:
     """
-    해당 심볼 미체결 주문 전부 취소 (v2.14: 일반 주문 + Algo Order 동시).
+    해당 심볼 미체결 주문 취소 (v3.1: Hedge Mode 방향별 선택적 취소).
 
-    2025-12-09 이후 TP/SL이 Algo Order로 전환됨.
-    기존 cancel_all_orders()는 /fapi/v1/allOpenOrders만 취소하므로
-    Algo Order(/fapi/v1/algoOpenOrders)는 잔존 → 좀비 주문 발생 가능.
-    → 일반 주문 취소 + fapiPrivateDeleteAlgoOpenOrders 모두 호출.
+    [v3.1] pos_side 지정 시 해당 방향의 주문만 취소.
+           pos_side="" (기본): 전체 취소 (하위 호환).
+
+    Hedge Mode 핵심 변경:
+        동일 심볼에 LONG + SHORT 양방향 포지션이 있을 수 있으므로,
+        한쪽 방향의 TP/SL만 취소하고 반대편은 보존해야 함.
+        → pos_side 지정 시 Algo Order를 개별 조회 후 positionSide 매칭하여 취소.
     """
     raw = _to_raw_symbol(symbol)
+    position_side_filter = ""
+    if pos_side:
+        position_side_filter = "LONG" if pos_side.lower() == "long" else "SHORT"
 
     # ① 일반 미체결 주문 취소
-    try:
-        exchange.cancel_all_orders(symbol)
-        logger.info(f"[ORDER] {symbol} 일반 미체결 주문 전부 취소")
-    except Exception as e:
-        logger.error(f"[ORDER] 일반 주문 취소 실패 {symbol}: {e}")
+    # Binance cancel_all_orders는 positionSide 필터를 지원하지 않으므로
+    # pos_side 지정 시 개별 주문 조회 후 매칭 취소
+    if not position_side_filter:
+        # 방향 미지정 → 전체 취소 (하위 호환)
+        try:
+            exchange.cancel_all_orders(symbol)
+            logger.info(f"[ORDER] {symbol} 일반 미체결 주문 전부 취소")
+        except Exception as e:
+            logger.error(f"[ORDER] 일반 주문 취소 실패 {symbol}: {e}")
+    else:
+        # 방향 지정 → 개별 주문 필터링 취소 (반대편 보존)
+        try:
+            open_orders = exchange.fetch_open_orders(symbol)
+            canceled = 0
+            for order in open_orders:
+                order_ps = (order.get("info", {}).get("positionSide", "") or "").upper()
+                if order_ps == position_side_filter:
+                    try:
+                        exchange.cancel_order(order["id"], symbol)
+                        canceled += 1
+                    except Exception as ce:
+                        logger.warning(f"[ORDER] 개별 주문 취소 실패 {order.get('id')}: {ce}")
+            logger.info(
+                f"[ORDER] {symbol} [{position_side_filter}] 일반 주문 {canceled}건 취소 "
+                f"(전체 {len(open_orders)}건 중)"
+            )
+        except Exception as e:
+            logger.error(f"[ORDER] 일반 주문 조회/취소 실패 {symbol}: {e}")
 
     # ② Algo Order 취소 (TP/SL은 algoOpenOrders에 있음)
-    try:
-        exchange.fapiPrivateDeleteAlgoOpenOrders({"symbol": raw})
-        logger.info(f"[ORDER] {symbol} Algo 미체결 주문 전부 취소 (TP/SL)")
-    except Exception as e:
-        # 열린 algoOrder가 없으면 에러가 날 수 있음 — 경고 수준으로 처리
-        logger.warning(f"[ORDER] Algo 주문 취소 실패 (없을 수도 있음) {symbol}: {e}")
+    if not position_side_filter:
+        # 방향 미지정 → 전체 Algo Order 취소 (하위 호환)
+        try:
+            exchange.fapiPrivateDeleteAlgoOpenOrders({"symbol": raw})
+            logger.info(f"[ORDER] {symbol} Algo 미체결 주문 전부 취소 (TP/SL)")
+        except Exception as e:
+            logger.warning(f"[ORDER] Algo 주문 취소 실패 (없을 수도 있음) {symbol}: {e}")
+    else:
+        # 방향 지정 → Algo Order 개별 조회 후 positionSide 매칭 취소
+        try:
+            resp = exchange.fapiPrivateGetOpenAlgoOrders({"symbol": raw})
+            algo_orders = resp.get("orders", []) if isinstance(resp, dict) else resp
+            canceled = 0
+            for algo in algo_orders:
+                algo_ps = (algo.get("positionSide", "") or "").upper()
+                if algo_ps == position_side_filter:
+                    algo_id = algo.get("algoId")
+                    if algo_id:
+                        try:
+                            exchange.fapiPrivateDeleteAlgoOrder({"algoId": int(algo_id)})
+                            canceled += 1
+                        except Exception as ce:
+                            logger.warning(f"[ORDER] Algo 개별 취소 실패 algoId={algo_id}: {ce}")
+            logger.info(
+                f"[ORDER] {symbol} [{position_side_filter}] Algo 주문 {canceled}건 취소 "
+                f"(전체 {len(algo_orders)}건 중)"
+            )
+        except Exception as e:
+            logger.warning(f"[ORDER] Algo 주문 조회/취소 실패 {symbol}: {e}")
 
 
 def close_position_market(symbol: str, size: float = 0.0, pos_side: str = "long") -> None:
     """
-    시장가 강제 청산 (v2.15: pos_side 파라미터 추가 → LONG/SHORT 올바른 방향 청산).
+    시장가 강제 청산 (v3.0 Hedge Mode: positionSide 명시).
 
-    기존: 외부에서 넘겨받은 size 사용 → 부분 청산, 누락 등으로 불일치 가능
-    v2.14: Binance fetch_positions()로 실시간 포지션 크기 조회 후 사용
-    v2.15: pos_side로 청산 방향 결정
-           LONG 포지션 청산 → side="sell"
-           SHORT 포지션 청산 → side="buy"
+    [v3.0] 헤지 모드에서는 positionSide="LONG"/"SHORT" 지정 필수.
+           동일 심볼에 양 방향 포지션이 있을 수 있으므로 정확한 방향만 청산.
     """
-    # Binance 실시간 포지션 크기 재조회
+    position_side = "LONG" if pos_side == "long" else "SHORT"
+
+    # Binance 실시간 포지션 크기 재조회 (v3.0: positionSide 매칭)
     try:
         positions = exchange.fetch_positions([symbol])
         for pos in positions:
             contracts = float(pos.get("contracts", 0) or 0)
             if contracts > 0:
-                raw_size = contracts
-                # symbol 정규화 비교
                 pos_sym = pos["symbol"].split(":")[0]
-                if pos_sym == symbol.split(":")[0]:
-                    size = raw_size
+                binance_pos_side = (pos.get("side", "long") or "long").lower()
+                if pos_sym == symbol.split(":")[0] and binance_pos_side == pos_side:
+                    size = contracts
                     logger.info(
-                        f"[ORDER] 강제청산 실시간 수량 확인: {symbol} → {size} "
-                        f"(Binance fetch_positions)"
+                        f"[ORDER] 강제청산 실시간 수량 확인: {symbol} [{position_side}] → {size}"
                     )
                     break
     except Exception as e:
@@ -451,10 +498,10 @@ def close_position_market(symbol: str, size: float = 0.0, pos_side: str = "long"
             f"[ORDER] 강제청산 실시간 조회 실패 — 파라미터 size({size}) 폴백: {e}"
         )
 
-    close_side = "sell" if pos_side == "long" else "buy"   # [v2.15]
+    close_side = "sell" if pos_side == "long" else "buy"
     size = _round_amount(symbol, size)
     if size <= 0:
-        logger.warning(f"[ORDER] {symbol} 강제청산 수량 0 → 스킵")
+        logger.warning(f"[ORDER] {symbol} [{position_side}] 강제청산 수량 0 → 스킵")
         return
 
     try:
@@ -463,11 +510,11 @@ def close_position_market(symbol: str, size: float = 0.0, pos_side: str = "long"
             type="MARKET",
             side=close_side,
             amount=size,
-            params={"reduceOnly": True}
+            params={"positionSide": position_side}
         )
-        logger.info(f"[ORDER] {symbol} 강제 청산 완료 (size={size}, side={close_side})")
+        logger.info(f"[ORDER] {symbol} [{position_side}] 강제 청산 완료 (size={size}, side={close_side})")
     except Exception as e:
-        logger.error(f"[ORDER] 강제 청산 실패 {symbol}: {e}")
+        logger.error(f"[ORDER] 강제 청산 실패 {symbol} [{position_side}]: {e}")
 
 
 def update_atr_tp_sl(open_positions: dict) -> None:
@@ -487,14 +534,16 @@ def update_atr_tp_sl(open_positions: dict) -> None:
 
     Args:
         open_positions: get_open_positions() 반환값
-                        {symbol: {entry, side, size, strategy_id, ...}}
+                        {pos_key: {entry, side, size, strategy_id, symbol, ...}}
+                        [v3.0] pos_key = "symbol:LONG" / "symbol:SHORT"
     """
     from strategies.registry import STRATEGY_REGISTRY
     from strategies.indicators import get_atr_value
     from core.data_manager import fetch_ohlcv
-    from core.position_manager import get_open_algo_orders
+    from core.position_manager import get_open_algo_orders, parse_pos_key
 
-    for symbol, pos_info in open_positions.items():
+    for pos_key, pos_info in open_positions.items():
+        symbol, _ = parse_pos_key(pos_key)
         strategy_id = pos_info.get("strategy_id", "")
         if not strategy_id or strategy_id not in STRATEGY_REGISTRY:
             logger.debug(f"[ATR-UPDATE] {symbol} strategy_id 없음 → 스킵")
@@ -561,9 +610,9 @@ def update_atr_tp_sl(open_positions: dict) -> None:
         except Exception as e:
             logger.warning(f"[ATR-UPDATE] {symbol} 기존 SL 조회 실패 → Ratchet 스킵: {e}")
 
-        # ── 4. 기존 Algo Order 취소 ───────────────────────────
+        # ── 4. 기존 Algo Order 취소 (v3.1: 방향별 취소 — 반대편 보존) ──
         try:
-            cancel_all_open_orders(symbol)
+            cancel_all_open_orders(symbol, pos_side=direction)
         except Exception as e:
             logger.error(f"[ATR-UPDATE] {symbol} 기존 주문 취소 실패 → 재등록 중단: {e}")
             continue

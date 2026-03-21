@@ -1,18 +1,20 @@
 """
-core/position_manager.py — 심볼당 1포지션 상태 추적 (v2.11)
+core/position_manager.py — 헤지 모드 포지션 상태 추적 (v3.0)
+
+[v3.0] 헤지 모드 전면 전환
+  - 포지션 키 변경: symbol → "symbol:LONG" / "symbol:SHORT" 복합 키
+  - 동일 심볼에 LONG + SHORT 독립 포지션 최대 1개씩 허용
+  - get_open_positions(): Binance fetch_positions()에서 positionSide 별 분리
+  - record_position_timeframe(): pos_key = "symbol:direction" 형태로 기록
+  - state.json 구조: {"BTC/USDT:LONG": {...}, "BTC/USDT:SHORT": {...}}
+  - has_position(symbol, direction): 특정 방향의 포지션 존재 여부
+  - get_position_age_hours(pos_key): 복합 키 기반 보유 시간 조회
 
 수정 히스토리:
-  v2.8 : ccxt unified symbol 정규화 (BTC/USDT:USDT → BTC/USDT)
-  v2.9 : _position_timeframe in-memory → JSON 파일 영속화,
-          봇 자체 entry_time 기록 (Binance updateTime 대신),
-          포지션 닫히면 state.json 자동 정리
-  v2.10:
-  [FIX1] get_open_positions_live(): Binance fetch_positions() 직접 조회 함수 분리
-  [FIX2] get_realtime_position_size(): 강제청산/조회 시 Binance 실시간 크기 단독 조회
-  [FIX3] get_open_algo_orders(): 현재 등록된 Algo Order(TP/SL) 목록 조회
-  v2.11:
-  [FIX4] record_position_timeframe(): strategy_id 파라미터 추가 → state.json에 저장
-         → 24봉 강제청산 로그, 포지션 추적 시 어떤 전략으로 진입했는지 기록
+  v2.11: record_position_timeframe() strategy_id 추가
+  v2.10: get_open_positions_live(), get_realtime_position_size(), get_open_algo_orders()
+  v2.9 : state.json 영속화, 봇 자체 entry_time 기록
+  v2.8 : ccxt unified symbol 정규화
 """
 
 import json
@@ -65,48 +67,71 @@ def normalize_symbol(symbol: str) -> str:
     return symbol
 
 
-def record_position_timeframe(symbol: str, timeframe: str, strategy_id: str = "") -> None:
+def make_pos_key(symbol: str, direction: str) -> str:
     """
-    진입 시 타임프레임 + 진입 시각 + 전략 ID 기록 (v2.11: strategy_id 추가).
+    [v3.0] 포지션 복합 키 생성.
+    "BTC/USDT" + "long" → "BTC/USDT:LONG"
+    """
+    return f"{symbol}:{direction.upper()}"
+
+
+def parse_pos_key(pos_key: str) -> tuple[str, str]:
+    """
+    [v3.0] 복합 키에서 심볼과 방향 분리.
+    "BTC/USDT:LONG" → ("BTC/USDT", "long")
+    """
+    if ":" in pos_key:
+        parts = pos_key.rsplit(":", 1)
+        return parts[0], parts[1].lower()
+    return pos_key, "long"
+
+
+def record_position_timeframe(
+    symbol: str, timeframe: str, strategy_id: str = "", direction: str = "long"
+) -> None:
+    """
+    진입 시 타임프레임 + 진입 시각 + 전략 ID 기록 (v3.0: direction 추가).
     order 성공 직후 main.py에서 호출.
 
+    [v3.0] 키 변경: symbol → "symbol:DIRECTION"
     state.json 구조:
-        {"BTC/USDT": {"timeframe": "5m", "entry_time": 1234567890.0, "strategy_id": "BTC_5m_PSAR_ROC"}}
+        {"BTC/USDT:LONG": {"timeframe": "5m", "entry_time": 1234567890.0, "strategy_id": "..."}}
     """
+    pos_key = make_pos_key(symbol, direction)
     state = _load_state()
-    state[symbol] = {
+    state[pos_key] = {
         "timeframe":   timeframe,
-        "entry_time":  time.time(),   # Unix timestamp (초)
-        "strategy_id": strategy_id,   # v2.11: 어떤 전략으로 진입했는지 기록
+        "entry_time":  time.time(),
+        "strategy_id": strategy_id,
+        "direction":   direction.lower(),
     }
     _save_state(state)
     logger.info(
-        f"[POSITION] 진입 기록: {symbol} | TF={timeframe} | 전략={strategy_id or '?'} "
+        f"[POSITION] 진입 기록: {pos_key} | TF={timeframe} | 전략={strategy_id or '?'} "
         f"| at {time.strftime('%H:%M:%S')}"
     )
 
 
-def _cleanup_closed_positions(open_symbols: set) -> None:
+def _cleanup_closed_positions(open_pos_keys: set) -> None:
     """
     현재 열린 포지션 목록과 비교해 닫힌 포지션 state.json에서 제거.
+    [v3.0] 키가 "symbol:DIRECTION" 형태.
     """
     state = _load_state()
-    removed = [s for s in list(state.keys()) if s not in open_symbols]
+    removed = [k for k in list(state.keys()) if k not in open_pos_keys]
     if removed:
-        for s in removed:
-            del state[s]
+        for k in removed:
+            del state[k]
         _save_state(state)
         logger.info(f"[POSITION] 청산 확인 — state.json 정리: {removed}")
 
 
 # ── [v2.10] Binance 실시간 단독 조회 함수들 ─────────────────
 
-def get_realtime_position_size(symbol: str) -> float:
+def get_realtime_position_size(symbol: str, direction: str = "long") -> float:
     """
-    [v2.10] Binance fetch_positions()로 실시간 포지션 크기만 단독 조회.
-
-    강제청산 등 size가 중요한 순간에 사용.
-    조회 실패 시 0.0 반환 (호출부에서 폴백 처리).
+    [v3.0] Binance fetch_positions()로 실시간 포지션 크기 조회.
+    헤지 모드: positionSide 매칭하여 해당 방향 포지션만 반환.
     """
     try:
         positions = exchange.fetch_positions([symbol])
@@ -114,9 +139,10 @@ def get_realtime_position_size(symbol: str) -> float:
             contracts = float(pos.get("contracts", 0) or 0)
             if contracts > 0:
                 pos_sym = normalize_symbol(pos["symbol"])
-                if pos_sym == normalize_symbol(symbol):
+                pos_side = (pos.get("side", "long") or "long").lower()
+                if pos_sym == normalize_symbol(symbol) and pos_side == direction:
                     logger.info(
-                        f"[POSITION] 실시간 포지션 크기 조회: {symbol} = {contracts}"
+                        f"[POSITION] 실시간 포지션 크기 조회: {symbol} [{direction.upper()}] = {contracts}"
                     )
                     return contracts
         return 0.0
@@ -128,10 +154,7 @@ def get_realtime_position_size(symbol: str) -> float:
 def get_open_algo_orders(symbol: str) -> list:
     """
     [v2.10] 해당 심볼의 현재 등록된 Algo Order(TP/SL) 목록 조회.
-
-    Binance /fapi/v1/openAlgoOrders 직접 조회.
-    TP/SL이 정상 등록되어 있는지 확인할 때 사용.
-    반환: [{algoId, orderType, side, stopPrice, ...}, ...]
+    반환: [{algoId, orderType, side, stopPrice, positionSide, ...}, ...]
     """
     raw_symbol = symbol.split(":")[0].replace("/", "")
     try:
@@ -141,6 +164,7 @@ def get_open_algo_orders(symbol: str) -> list:
         for o in orders:
             logger.info(
                 f"  algoId={o.get('algoId')} | type={o.get('orderType')} | "
+                f"positionSide={o.get('positionSide', '?')} | "
                 f"stopPrice={o.get('triggerPrice', o.get('stopPrice', '?'))}"
             )
         return orders
@@ -151,13 +175,12 @@ def get_open_algo_orders(symbol: str) -> list:
 
 def get_open_positions() -> dict:
     """
-    현재 열린 포지션 조회 (v2.10: Binance 실시간 우선).
+    현재 열린 포지션 조회 (v3.0: 헤지 모드 — positionSide별 독립 추적).
 
-    데이터 계층:
-      - 포지션 크기/진입가/PnL → Binance fetch_positions() 실시간 데이터
-      - entry_time/timeframe   → state.json (Binance가 진입 시각 미제공이므로 로컬 유지)
+    [v3.0] 반환 키: "symbol:LONG", "symbol:SHORT" (복합 키)
+           동일 심볼에 LONG + SHORT 2개의 독립 포지션 가능
 
-    반환: {symbol: {side, size, entry, unrealized_pnl, entry_time, timeframe, raw_symbol}}
+    반환: {pos_key: {side, size, entry, unrealized_pnl, entry_time, timeframe, strategy_id, raw_symbol}}
     """
     try:
         positions = exchange.fetch_positions()
@@ -170,23 +193,26 @@ def get_open_positions() -> dict:
                 continue
 
             symbol     = normalize_symbol(pos["symbol"])
-            saved      = state.get(symbol, {})
+            direction  = (pos.get("side", "long") or "long").lower()
+            pos_key    = make_pos_key(symbol, direction)
+            saved      = state.get(pos_key, {})
 
             # entry_time: 봇 기록 우선 → Binance updateTime 폴백 → 현재 시각 폴백
-            binance_ts = pos.get("timestamp")   # ms
+            binance_ts = pos.get("timestamp")
             entry_time = saved.get("entry_time") or (
                 (binance_ts / 1000) if binance_ts else time.time()
             )
 
-            result[symbol] = {
-                "side":           pos.get("side", "long"),
-                "size":           size,                                  # ← Binance 실시간
-                "entry":          float(pos.get("entryPrice", 0) or 0),  # ← Binance 실시간
-                "unrealized_pnl": float(pos.get("unrealizedPnl", 0) or 0),  # ← Binance 실시간
-                "entry_time":     entry_time,                            # ← state.json 우선
-                "timeframe":      saved.get("timeframe", "1h"),          # ← state.json 우선
-                "strategy_id":    saved.get("strategy_id", ""),          # ← v2.11: 전략 ID
+            result[pos_key] = {
+                "side":           direction,
+                "size":           size,
+                "entry":          float(pos.get("entryPrice", 0) or 0),
+                "unrealized_pnl": float(pos.get("unrealizedPnl", 0) or 0),
+                "entry_time":     entry_time,
+                "timeframe":      saved.get("timeframe", "1h"),
+                "strategy_id":    saved.get("strategy_id", ""),
                 "raw_symbol":     pos["symbol"],
+                "symbol":         symbol,
             }
 
         # 닫힌 포지션 정리
@@ -198,20 +224,32 @@ def get_open_positions() -> dict:
         return {}
 
 
-def has_position(symbol: str) -> bool:
-    """해당 심볼 포지션 보유 여부"""
-    return symbol in get_open_positions()
-
-
-def get_position_age_hours(symbol: str) -> float:
+def has_position(symbol: str, direction: str = "") -> bool:
     """
-    포지션 보유 시간 (시간 단위).
-    봇 자체 기록 entry_time 기반 → 정확한 오픈 시간 반영.
+    [v3.0] 해당 심볼/방향 포지션 보유 여부.
+
+    direction="" → 해당 심볼의 어느 방향이든 포지션이 있으면 True
+    direction="long"/"short" → 특정 방향만 체크
     """
     positions = get_open_positions()
-    if symbol not in positions:
+    if direction:
+        pos_key = make_pos_key(symbol, direction)
+        return pos_key in positions
+    else:
+        long_key  = make_pos_key(symbol, "long")
+        short_key = make_pos_key(symbol, "short")
+        return long_key in positions or short_key in positions
+
+
+def get_position_age_hours(pos_key: str) -> float:
+    """
+    포지션 보유 시간 (시간 단위).
+    [v3.0] pos_key = "symbol:LONG" / "symbol:SHORT"
+    """
+    positions = get_open_positions()
+    if pos_key not in positions:
         return 0.0
-    entry_time = positions[symbol].get("entry_time", 0)
+    entry_time = positions[pos_key].get("entry_time", 0)
     if not entry_time:
         return 0.0
     return (time.time() - entry_time) / 3600.0

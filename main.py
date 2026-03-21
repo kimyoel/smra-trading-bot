@@ -1,96 +1,49 @@
 """
-main.py — SMRA Bot 메인 루프 (v5.0)
+main.py — SMRA Bot 메인 루프 (v6.3.1 — Hedge Mode 버그 수정)
 
+v6.3.1 (Hedge Mode 로직 수정):
+  [FIX] 강제청산 시 cancel_all_open_orders(symbol, pos_side=direction) 변경
+    → 동일 심볼 반대 방향 TP/SL 보존 (LONG↔SHORT 독립 관리)
+  [FIX] notify_entry 중복 방지 로직 수정
+    → _notified_entries discard 순서 변경 (재진입 시에만 초기화)
+
+v6.3 (Hedge Mode 전면 전환):
+  [HEDGE] 헤지 모드(dualSidePosition=true) 적용
+  - 동일 심볼에 LONG + SHORT 독립 포지션 최대 1개씩 허용
+  - 중복 진입 방지: (symbol, direction) 복합 키 기준
+  - 포지션 키: "symbol:LONG" / "symbol:SHORT" 형태
+  - 봇 시작 시 ensure_hedge_mode() 1회 호출 (안전한 모드 전환)
+  - 중복진입 추적을 executed_pos_keys로 교체: (symbol, direction) 추적
+  - 청산 감지: pos_key 기반 _prev_open_positions 비교
+  - 강제청산: pos_key 기반 max_hold_bars 체크
+
+v6.2:
+  [XRP 4h 추가] XRPUSDT_4h_WFA_Report.docx 기반 XRP 4시간봉 전략 10개 추가
+  - BTC 40개 + ETH 40개 + XRP 40개 = 총 120개 전략
+v6.1:
+  [XRP 1h 추가] XRPUSDT_1h_WFA_Report.docx 기반 XRP 1시간봉 전략 10개 추가
+v6.0:
+  [XRP 15m 추가] XRPUSDT_15m_WFA_Report.docx 기반 XRP 15분봉 전략 10개 추가
 v2.6: 봉 마감 정각 동기화 (wait_for_candle_close)
 v2.7: 신호 TTL → 봉 경계 체크로 대체, 파일 기반 entry_time (v2.9)
 v2.8:
   [수정] 강제청산 시 close_position_market() 내부에서 Binance 실시간 size 재조회
-         → pos_info["size"] 의존 제거 (부분청산 등 불일치 방지)
-  [수정] cancel_all_open_orders() → 일반 주문 + Algo Order 동시 취소 (v2.14 연계)
 v2.9:
-  [FIX] 1심볼 2중 진입 완전 차단 — executed_symbols set 도입
-         기존 취약점: execute_order 실패(TP/SL 등록 실패 → 긴급청산 실패) 후
-         continue로 동일 심볼 다른 전략 재시도 → 2중 포지션 가능
-         → 한 번이라도 execute_order 호출한 심볼은 이번 루프에서 재시도 금지
-  [FIX] record_position_timeframe() → strategy_id 함께 저장 (v2.11 연계)
-         → 24봉 강제청산 로그에 어떤 전략으로 진입했는지 표시
+  [FIX] 1심볼 2중 진입 완전 차단 — executed_pos_keys set 도입
 v2.11:
   [FIX] 1루프 1심볼 제한 break 제거 → 동일 루프 내 여러 심볼 동시 진입 허용
-         동일 심볼 2중 진입 차단은 executed_symbols set 으로 계속 유지
-  [FIX] 텔레그램 알림 side="LONG" 하드코딩 → direction 동적 처리 (LONG/SHORT 정확히 표시)
 v2.12:
   [FIX] 익절/손절 텔레그램 알림 누락 수정
-         - TP/SL Algo Order 체결 시 포지션 소멸을 다음 루프에서 감지
-         - _prev_open_positions 모듈 변수로 루프 간 포지션 상태 추적
-         - fetch_realized_pnl() 로 Binance Income API 실현 PnL 조회 후 notify_close() 발송
-         - 24봉 강제청산 시: unrealized_pnl 기반 즉시 notify_close() 발송 + _prev에서 제거(중복 방지)
-v2.15:
-  [FIX] 타임프레임별 봉 마감 동기화 (signal_generator v3.2 연계)
-         - 기존: 5분마다 17개 전략 전부 지표 조회 (불필요한 API 호출)
-         - 변경: 각 전략의 타임프레임 봉 마감 시점에만 해당 전략 평가
-           15m → 15분 정각, 1h → 정시, 4h → 4시간 정각
-         - 효과: API 호출량 ~75% 감소 (비마감 루프에서 1h/4h 전략 스킵)
-v2.16:
-  [최적화] 5분봉 루프 → 15분봉 루프로 변경
-         - 5m 전략 0개 → 최소 타임프레임 15m 기준으로 루프 주기 변경
-         - CANDLE_TF_SEC: 300초(5분) → 900초(15분)
-         - 루프 횟수: 288→96/일 (67% 감소), API 호출 추가 절감
-         - 15m 전략은 매 루프 평가, 1h는 4번째마다, 4h는 16번째마다
-         - 봉 경계 체크도 15분봉 ID 기준으로 전환
-v2.14:
-  [FIX] 고정 24봉 강제청산 → 전략별 max_hold_bars 동적 적용
-         - registry.py의 max_hold_bars 필드 참조 (backtest_report_final.docx 기반)
-         - 16개 전략: 48봉, XRP_4h_SHORT_MOM: 16봉
-         - TF_HOURS 제거 → TF_BAR_HOURS로 교체 (1봉당 시간)
-         - 강제청산 기준: max_hold_bars x bar_hours
 v2.13:
   [FIX] signal_arbiter v5.0 연계 — Score 기반 심볼 충돌 해소
-         - arbiter에서 동일 심볼 → Score 최고 1개만 반환
-         - executed_symbols는 2중 방어 (arbiter가 놓치는 케이스 안전장치)로 유지
-         - 전략별 최적 TP/SL 매칭: registry의 tp_mult/sl_mult → arbiter → order_manager 흐름 확인
+v2.14:
+  [FIX] 고정 24봉 강제청산 → 전략별 max_hold_bars 동적 적용
+v2.15:
+  [FIX] 타임프레임별 봉 마감 동기화
+v2.16:
+  [최적화] 5분봉 루프 → 15분봉 루프로 변경
 v2.18:
   [FIX] 텔레그램 알림 중복 발송 완전 수정
-v5.5:
-  [ETH 추가] ETHUSDT_5m_WFA_Report.docx 기반 ETH 5분봉 전략 10개 추가
-  - BTC 40개 + ETH 10개 = 총 50개 전략
-  - 자본배분: BTC 60%, ETH 30%, 여유 10%
-  - ETH 5m: 742개 전략, 완화기준 102개(13.7%), 황금기준 20개(2.7%)
-  - ETH 레버리지: 이론=1/(SL%+0.5%), 권장=이론×80% (상한20x, SL<1% 슬리피지 감안)
-  - BTC↔ETH 독립 진입 가능 (심볼 충돌 없음)
-v5.4:
-  [4시간봉 추가] BTCUSDT_4h_WFA_Report.docx 기반 4시간봉 전략 10개 추가
-  - 기존 15m 10개 + 5m 10개 + 1h 10개 + 4h 10개 = 총 40개 전략
-  - 4h 전략: 48루프마다 평가 (5분×48=4시간)
-  - 4h 레버리지: 이론=1/(SL%+0.5%), 권장=이론×80% (상한20x)
-  - 4h 황금기준: surv≥6, avg_calmar≥2, min_calmar≥0.5 (443/1894개 통과)
-  - 새 지표: CMF (Chaikin Money Flow)
-  - 충돌 해소: 4h > 1h > 15m > 5m (큰 타임프레임 우선)
-v5.3:
-  [1시간봉 추가] BTCUSDT_1h_WFA_Report.docx 기반 1시간봉 전략 10개 추가
-  - 기존 15m 10개 + 5m 10개 + 1h 10개 = 총 30개 전략
-  - 1h 전략: 12루프마다 평가 (5분×12=1시간), 15m: 3루프마다, 5m: 매 루프
-  - 1h 레버리지: 이론=1/(SL%+0.5%), 권장=이론×80% (상한20x, min_calmar≥1.5→+2)
-  - 1h 황금기준: surv≥6, avg_calmar≥2, min_calmar≥0.5 (272/3194개 통과)
-  - 새 지표: ROC (Rate of Change)
-v5.2:
-  [5분봉 추가] BTCUSDT_5m_WFA_Report.docx 기반 5분봉 전략 10개 추가
-  - 기존 15m 10개 + 5m 10개 = 총 20개 전략
-  - 루프 주기: 15분봉(900초) → 5분봉(300초) 변경 (288루프/일)
-  - 5m 전략: 매 루프 평가, 15m 전략: 3루프마다 평가
-  - 5m 레버리지: 보고서 권장값 적용 (10~20x, 노이즈 감안 보수적)
-v5.1:
-  [레버리지] WFA 보고서 레버리지 섹션 반영
-  - 공식: recommended = floor(0.80 / (SL% + 0.4%))
-  - leverage 값: L1=27, L2=14, L3=12, L4=33, L5=88
-                  S1=27, S2=18, S3=18, S4=23, S5=23
-  - max_leverage: theoretical_max 적용
-  - _check_sl_above_liquidation SHORT 방향 지원 추가 (order_manager v2.17)
-v5.0:
-  [전략 교체] WFA OOS 보고서 기반 BTCUSDT 15m 전용 10개 전략으로 교체
-  - 기존 17개 다심볼(BTC/ETH/XRP) → BTCUSDT 15m LONG 5 + SHORT 5
-  - 충돌 해소: Sharpe → Score 기반 (WFA 종합 스코어)
-  - entry_fn 아키텍처: 전략별 복합 진입 함수로 교체
-  - 데이터 출처: BTCUSDT_15m_WFA_Report.docx (2026-03-21)
 """
 
 import time
@@ -99,11 +52,12 @@ from datetime import datetime, timezone
 
 from config import LOOP_INTERVAL_SEC
 from strategies.registry import STRATEGY_REGISTRY
-from core.data_manager import get_balance, clear_cache
+from core.data_manager import get_balance, clear_cache, ensure_hedge_mode
 from core.signal_generator import generate_all_signals
 from core.signal_arbiter import arbitrate
 from core.position_manager import (
-    get_open_positions, get_position_age_bars, record_position_timeframe
+    get_open_positions, get_position_age_bars, record_position_timeframe,
+    make_pos_key, parse_pos_key,
 )
 from core.order_manager import execute_order, cancel_all_open_orders, close_position_market, update_atr_tp_sl, fetch_realized_pnl
 from core.risk_manager import (
@@ -120,25 +74,22 @@ logger = get_logger("main")
 TF_BAR_HOURS = {"5m": 1/12, "15m": 0.25, "1h": 1.0, "4h": 4.0}
 
 # [v5.2] 봉 마감 동기화 설정 — 5분봉 기준
-# 5m 전략 추가로 최소 타임프레임 5m 기준 루프
-# 5m 전략 매 루프, 15m 전략 3번째 루프에 평가
 CANDLE_TF_SEC = 5 * 60   # 기준: 5분봉 (300초)
-CANDLE_OFFSET = 3         # 봉 마감 후 3초 뒤 실행 (데이터 확정 여유)
+CANDLE_OFFSET = 3         # 봉 마감 후 3초 뒤 실행
 
 # [v2.12] 루프 간 포지션 상태 추적 (청산 감지용)
+# [v6.3] 키: "symbol:LONG" / "symbol:SHORT" 복합 키
 _prev_open_positions: dict = {}
 
 # [v2.18] 중복 알림 방지 — 이미 알림 발송한 청산/진입 건 기록
-# key 형식: "{symbol}:{strategy_id}"
-_notified_closes: set = set()   # 청산 알림 발송 완료 목록
-_notified_entries: set = set()  # 진입 알림 발송 완료 목록
+# [v6.3] key 형식: "symbol:DIRECTION:strategy_id"
+_notified_closes: set = set()
+_notified_entries: set = set()
 
 
 def wait_for_candle_close() -> None:
     """
     [v5.2] 다음 5분봉 마감 후 CANDLE_OFFSET초에 맞춰 sleep.
-    5분 정각(00, 05, 10, 15, ..., 55분)에 +3초 시점에 루프가 시작됨.
-    15분봉(5분의 배수)은 자동으로 동기화됨.
     """
     now = time.time()
     next_close = (int(now / CANDLE_TF_SEC) + 1) * CANDLE_TF_SEC
@@ -157,91 +108,87 @@ def _current_candle_id() -> int:
 
 
 def run_loop() -> None:
-    """단일 루프 실행"""
-    global _prev_open_positions   # [v2.12] 루프 간 포지션 상태 추적
-    candle_id_at_start = _current_candle_id()   # v2.7: 봉 경계 추적
+    """단일 루프 실행 (v6.3: Hedge Mode — pos_key 기반 독립 포지션 관리)"""
+    global _prev_open_positions
+    candle_id_at_start = _current_candle_id()
     logger.info("=" * 60)
-    logger.info("[LOOP] 루프 시작")
+    logger.info("[LOOP] 루프 시작 (Hedge Mode)")
 
     # ── 1. 캐시 초기화 (루프당 1회) ──────────────────────────
     clear_cache()
 
-    # ── 2. 잔고 조회 (total = 배분 기준, free = 진입 가능 체크용) ──
+    # ── 2. 잔고 조회 ──────────────────────────────────────────
     balance_total, balance_free = get_balance()
     if balance_total <= 0:
         logger.warning("[LOOP] 잔고 0 또는 조회 실패 — 이번 루프 스킵")
-        _update_prev_snapshot(open_positions={})  # [v2.18] 잔고 실패 시에도 스냅샷 갱신
+        _update_prev_snapshot(open_positions={})
         return
     logger.info(
-        f"[LOOP] 잔고 | total=${balance_total:.2f} USDT (walletBalance) | "
-        f"free=${balance_free:.2f} USDT (availableBalance)"
+        f"[LOOP] 잔고 | total=${balance_total:.2f} USDT | "
+        f"free=${balance_free:.2f} USDT"
     )
 
-    # ── 3. 현재 포지션 조회 ───────────────────────────────────
+    # ── 3. 현재 포지션 조회 (v6.3: pos_key 기반) ────────────
     open_positions = get_open_positions()
-    logger.info(f"[LOOP] 보유 포지션: {list(open_positions.keys()) or '없음'}")
+    pos_keys_list = list(open_positions.keys())
+    logger.info(f"[LOOP] 보유 포지션: {pos_keys_list or '없음'}")
 
-    # ── 3-1. [v2.12/v2.18] 청산 감지 — TP/SL Algo Order 체결 알림 ─
-    # 이전 루프에 있던 포지션이 이번 루프에 없으면 Binance가 자동 청산한 것
-    # [v2.18] _notified_closes로 중복 알림 완전 차단
-    _force_closed_this_loop: set = set()  # 24봉 강제청산 심볼 (중복 알림 방지)
-    for sym, prev_info in _prev_open_positions.items():
-        if sym not in open_positions:
+    # ── 3-1. [v6.3] 청산 감지 — pos_key 기반 비교 ────────────
+    _force_closed_this_loop: set = set()
+    for prev_key, prev_info in _prev_open_positions.items():
+        if prev_key not in open_positions:
             strat_id   = prev_info.get("strategy_id", "UNKNOWN")
-            close_key  = f"{sym}:{strat_id}"
+            close_key  = f"{prev_key}:{strat_id}"
 
-            # [v2.18] 이미 알림 보낸 건이면 스킵 (중복 방지 핵심)
             if close_key in _notified_closes:
-                logger.debug(f"[LOOP] {sym} 청산 알림 이미 발송됨 → 스킵")
+                logger.debug(f"[LOOP] {prev_key} 청산 알림 이미 발송됨 → 스킵")
                 continue
 
+            symbol, direction = parse_pos_key(prev_key)
             entry_time = prev_info.get("entry_time", 0)
-            pnl        = fetch_realized_pnl(sym, entry_time)
+            prev_tf    = prev_info.get("timeframe", "")
+            pnl        = fetch_realized_pnl(symbol, entry_time)
             result_lbl = "✅ 익절" if pnl > 0 else "❌ 손절"
-            notify_close(strat_id, sym, result_lbl, pnl)
-            _notified_closes.add(close_key)  # [v2.18] 발송 기록
-            logger.info(f"[LOOP] {sym} 청산 감지 (TP/SL) → 텔레그램 알림 (PnL={pnl:+.4f})")
+            notify_close(strat_id, f"{symbol} [{direction.upper()}]", result_lbl, pnl, timeframe=prev_tf)
+            _notified_closes.add(close_key)
+            logger.info(f"[LOOP] {prev_key} 청산 감지 (TP/SL) → 텔레그램 알림 (PnL={pnl:+.4f})")
 
-    # ── 4. max_hold_bars 초과 포지션 강제 청산 ────────────────
-    for symbol, pos_info in list(open_positions.items()):
+    # ── 4. max_hold_bars 초과 포지션 강제 청산 (v6.3: pos_key) ─
+    for pos_key, pos_info in list(open_positions.items()):
+        symbol, direction = parse_pos_key(pos_key)
         tf            = pos_info.get("timeframe", "1h")
         strategy_id   = pos_info.get("strategy_id", "UNKNOWN")
         bar_hours     = TF_BAR_HOURS.get(tf, 1.0)
-        age_h         = get_position_age_bars(symbol)   # 파일 기반 entry_time 사용
+        age_h         = get_position_age_bars(pos_key)
 
-        # [v2.14] 전략별 max_hold_bars 조회 (레지스트리에 없으면 48봉 기본값)
         strat = STRATEGY_REGISTRY.get(strategy_id, {})
         max_hold_bars = strat.get("max_hold_bars", 48)
         max_hours     = max_hold_bars * bar_hours
 
         if age_h > max_hours:
             logger.warning(
-                f"[LOOP] {symbol} {age_h:.1f}h 초과 "
+                f"[LOOP] {pos_key} {age_h:.1f}h 초과 "
                 f"(기준: {max_hours:.1f}h = {tf} {max_hold_bars}봉) → 강제 청산"
             )
             notify_circuit_breaker(
                 "POSITION_TIMEOUT",
-                f"{symbol} {age_h:.1f}h 초과 → {tf} {max_hold_bars}봉 기준 강제 청산 ({strategy_id})"
+                f"{pos_key} {age_h:.1f}h 초과 → {tf} {max_hold_bars}봉 기준 강제 청산 ({strategy_id})"
             )
-            cancel_all_open_orders(symbol)          # 일반 + Algo Order 동시 취소
-            pos_side = pos_info.get("side", "long")  # [v2.9] Binance에서 조회한 포지션 방향
-            close_position_market(symbol, pos_side=pos_side)  # v2.15: 방향 전달
+            cancel_all_open_orders(symbol, pos_side=direction)
+            close_position_market(symbol, pos_side=direction)
 
-            # [v2.12] 강제청산 즉시 텔레그램 알림 (unrealized_pnl 기준)
             force_pnl   = float(pos_info.get("unrealized_pnl", 0.0))
-            strat_id    = pos_info.get("strategy_id", "UNKNOWN")
             result_lbl  = "✅ 익절" if force_pnl > 0 else "❌ 손절"
-            notify_close(strat_id, symbol, f"⏰ {max_hold_bars}봉 강제청산 ({result_lbl})", force_pnl)
-            _notified_closes.add(f"{symbol}:{strat_id}")  # [v2.18] 강제청산도 발송 기록
-            _force_closed_this_loop.add(symbol)  # 다음 루프 중복 방지용 마킹
+            notify_close(strategy_id, f"{symbol} [{direction.upper()}]",
+                         f"⏰ {max_hold_bars}봉 강제청산 ({result_lbl})", force_pnl, timeframe=tf)
+            _notified_closes.add(f"{pos_key}:{strategy_id}")
+            _force_closed_this_loop.add(pos_key)
 
-    # ── 4-1. [v2.10] ATR 전략 TP/SL 매 봉 갱신 ──────────────
-    # ATR 기반 전략은 매 봉(5m/15m/1h)마다 최신 ATR로 TP/SL 재계산 후 Algo Order 재등록
-    # SL Ratchet: 손실 방향으로의 SL 이동 금지 (유리한 방향으로만 이동)
-    open_positions_after_close = get_open_positions()  # 강제청산 이후 갱신된 포지션
+    # ── 4-1. ATR 전략 TP/SL 매 봉 갱신 ──────────────────────
+    open_positions_after_close = get_open_positions()
     update_atr_tp_sl(open_positions_after_close)
 
-    # ── 5. 신호 생성 ──────────────────────────────────────────
+    # ── 5. 신호 생성 ────────────────────────────────────────
     try:
         signals = generate_all_signals()
         reset_api_error()
@@ -251,26 +198,25 @@ def run_loop() -> None:
         if err_cnt >= 5:
             notify_circuit_breaker("API_ERROR_FLOOD", f"연속 {err_cnt}회 오류")
             time.sleep(60)
-        _update_prev_snapshot(open_positions)  # [v2.17] early return 전 스냅샷 갱신
+        _update_prev_snapshot(open_positions)
         return
 
     logger.info(f"[LOOP] 신호 발생: {len(signals)}개")
 
-    # ── 6. Arbiter 필터링 ─────────────────────────────────────
+    # ── 6. Arbiter 필터링 (v6.3: pos_key 기반 중복 체크) ─────
     executable = arbitrate(signals, balance_total, open_positions)
     logger.info(f"[LOOP] 실행 가능 신호: {len(executable)}개")
 
     if not executable:
         logger.info("[LOOP] 실행할 신호 없음")
-        _update_prev_snapshot(open_positions)  # [v2.17] early return 전 스냅샷 갱신
+        _update_prev_snapshot(open_positions)
         return
 
-    # ── 7. Score 순 실행 (CB 발동 시 다음 신호 폴오버) ───────
+    # ── 7. Score 순 실행 (v6.3: executed_pos_keys 추적) ──────
     order_placed = False
-    # [v2.9] 이번 루프에서 execute_order 호출한 심볼 추적
-    # [v5.0] arbiter v5.0에서 Score 기반 심볼 중복 제거 후 넘어오지만
-    #         2중 방어 유지 (arbiter→main 사이에 포지션 변경 가능성 대비)
-    executed_symbols: set = set()
+    # [v6.3] (symbol, direction) 복합 키로 중복 진입 추적
+    #         동일 심볼이라도 반대 방향은 독립 허용
+    executed_pos_keys: set = set()
 
     for top_sig in executable:
         strategy    = top_sig["strategy"]
@@ -279,30 +225,28 @@ def run_loop() -> None:
         leverage    = strategy["leverage"]
         base_mdd    = strategy["base_mdd"]
         timeframe   = strategy["timeframe"]
+        direction   = top_sig.get("direction", "long")
+        pos_key     = make_pos_key(symbol, direction)
 
-        # [v2.9] 1심볼 2중 진입 완전 차단
-        # execute_order 호출 후 실패(TP/SL 실패→긴급청산 실패 등)해도
-        # 동일 심볼로 다시 시도하면 2중 포지션 위험 → 이번 루프에서 완전 금지
-        if symbol in executed_symbols:
+        # [v6.3] 동일 (심볼, 방향) 중복 진입 차단
+        if pos_key in executed_pos_keys:
             logger.warning(
-                f"[LOOP] ⚠️ 2중진입 차단: {strategy_id} | {symbol} "
+                f"[LOOP] ⚠️ 2중진입 차단: {strategy_id} | {pos_key} "
                 f"이번 루프에서 이미 execute_order 호출됨 → 스킵"
             )
             continue
 
-        # ── v2.7: 봉 경계 체크 ────────────────────────────────
-        # 에러 연쇄로 루프가 길어져 봉이 넘어간 경우 나머지 신호 포기
-        # → 다음 봉에서 새로 생성된 신호로 진입 (old 신호로 새 봉 진입 방지)
+        # ── 봉 경계 체크 ─────────────────────────────────────
         current_candle = _current_candle_id()
         if current_candle != candle_id_at_start:
             elapsed = (current_candle - candle_id_at_start) * CANDLE_TF_SEC
             logger.warning(
-                f"[LOOP] ⏰ 봉 경계 초과 — {elapsed/60:.0f}분 경과, 봉 {current_candle - candle_id_at_start}개 지남 "
+                f"[LOOP] ⏰ 봉 경계 초과 — {elapsed/60:.0f}분 경과 "
                 f"→ {strategy_id} 이후 포기, 다음 봉 대기"
             )
             break
 
-        # ── 8. Circuit Breaker 체크 ────────────────────────────
+        # ── 8. Circuit Breaker 체크 ──────────────────────────
         cb = check_circuit_breaker(symbol, strategy_id, base_mdd)
 
         if cb["block"]:
@@ -312,17 +256,15 @@ def run_loop() -> None:
             )
             continue
 
-        # 펀딩비 높음 → 레버리지 50% 감소
         if cb.get("action") == "REDUCE_LEVERAGE_50PCT":
             reduced_lev = max(1, leverage // 2)
             top_sig["strategy"] = {**strategy, "leverage": reduced_lev}
             logger.info(f"[LOOP] 펀딩비 높음 → 레버리지 {leverage}x → {reduced_lev}x")
 
-        # ── 9. MDD 업데이트 ────────────────────────────────────
+        # ── 9. MDD 업데이트 ──────────────────────────────────
         update_strategy_mdd(strategy_id, balance_total, base_mdd)
 
-        # ── 9-1. [v2.10] free 잔고 검증 (total 기준 마진 ≠ free 바닥) ──
-        # total으로 마진 계산했지만 실제로 진입할 수 있는지 free 로 커버 확인
+        # ── 9-1. free 잔고 검증 ──────────────────────────────
         required_margin = top_sig["margin"]
         if balance_free < required_margin:
             logger.warning(
@@ -331,56 +273,52 @@ def run_loop() -> None:
             )
             continue
 
-        # ── 10. 주문 실행 ─────────────────────────────────────
+        # ── 10. 주문 실행 ────────────────────────────────────
         entry = top_sig['entry_price']
         tp    = top_sig['tp']
         sl    = top_sig['sl']
+        dir_label = direction.upper()
         logger.info(
-            f"[LOOP] 주문 실행: {strategy_id} | {symbol} | "
+            f"[LOOP] 주문 실행: {strategy_id} [{dir_label}] | {symbol} | "
             f"진입가 {entry:.4f} | "
             f"TP {tp:.4f} (+{(tp/entry-1)*100:.2f}%) | "
             f"SL {sl:.4f} ({(sl/entry-1)*100:.2f}%)"
         )
 
-        executed_symbols.add(symbol)   # [v2.9] 호출 즉시 등록 (성공/실패 무관)
+        executed_pos_keys.add(pos_key)   # 호출 즉시 등록
         success = execute_order(top_sig)
 
         if success:
-            # ✅ 진입 성공 → 타임프레임 + 진입시각 + 전략ID 파일 기록 (24봉 청산용)
-            record_position_timeframe(symbol, timeframe, strategy_id)  # v2.9: strategy_id 추가
+            # ✅ 진입 성공 → 기록
+            record_position_timeframe(symbol, timeframe, strategy_id, direction=direction)
 
-            # [v2.18] 새 진입 시 해당 심볼의 알림 기록 클리어
-            #         → 이 포지션이 나중에 청산되면 정상 알림 발송됨
-            entry_key = f"{symbol}:{strategy_id}"
-            _notified_closes.discard(entry_key)
-            _notified_entries.discard(entry_key)
+            # 알림 기록 클리어 (재진입이므로 이전 청산 알림 초기화)
+            notify_key = f"{pos_key}:{strategy_id}"
+            _notified_closes.discard(notify_key)
 
-            direction_label = top_sig.get("direction", "long").upper()   # v2.11: 동적 방향
-
-            # [v2.18] 진입 알림도 1회만 발송
-            if entry_key not in _notified_entries:
+            # 진입 알림 1회만 발송
+            if notify_key not in _notified_entries:
                 notify_entry(
                     strategy_id=strategy_id,
                     symbol=symbol,
-                    side=direction_label,
+                    side=dir_label,
                     entry=entry,
                     tp=tp,
                     sl=sl,
                     leverage=top_sig["strategy"]["leverage"],
                     margin=top_sig["margin"],
+                    timeframe=timeframe,
                 )
-                _notified_entries.add(entry_key)
-            logger.info(f"[LOOP] ✅ 주문 완료: {strategy_id} [{direction_label}]")
+                _notified_entries.add(notify_key)
+            logger.info(f"[LOOP] ✅ 주문 완료: {strategy_id} [{dir_label}]")
             order_placed = True
-            # [v2.11] break 제거: 1심볼당 1포지션 허용, 루프 당 여러 심볼 진입 가능
-            # (동일 심볼 중복은 executed_symbols set 으로 계속 차단)
         else:
-            logger.error(f"[LOOP] ❌ 주문 실패: {strategy_id} → {symbol} 이번 루프 재시도 금지")
+            logger.error(f"[LOOP] ❌ 주문 실패: {strategy_id} → {pos_key} 이번 루프 재시도 금지")
 
     if not order_placed:
         logger.info("[LOOP] 모든 신호 시도 완료 (주문 없음)")
 
-    # ── [v2.17] 루프 끝: 현재 포지션 스냅샷 저장 ────────────────
+    # ── 루프 끝: 현재 포지션 스냅샷 저장 ─────────────────────
     _update_prev_snapshot(open_positions, _force_closed_this_loop)
 
 
@@ -389,20 +327,28 @@ def _update_prev_snapshot(
     force_closed: set | None = None,
 ) -> None:
     """
-    [v2.17] _prev_open_positions 스냅샷 갱신.
-    청산 감지 직후 _prev에서 즉시 제거 + 루프 끝에 전체 갱신.
+    [v6.3] _prev_open_positions 스냅샷 갱신 (pos_key 기반).
     """
     global _prev_open_positions
     snapshot = dict(open_positions)
     if force_closed:
-        for sym in force_closed:
-            snapshot.pop(sym, None)
+        for key in force_closed:
+            snapshot.pop(key, None)
     _prev_open_positions = snapshot
 
 
 def main() -> None:
-    logger.info("🚀 SMRA Bot v5.5 시작 (BTC 5m+15m+1h+4h + ETH 5m WFA 50전략 + Score 충돌 해소 + WFA 레버리지)")
-    logger.info(f"루프 간격: 5분봉 마감 동기화 (288루프/일) | 50개 전략 (BTC 40 + ETH 10) | Score 순위 충돌 해소")
+    logger.info("🚀 SMRA Bot v6.3 시작 (Hedge Mode)")
+    logger.info(f"120개 전략 (BTC 40 + ETH 40 + XRP 40) | Hedge Mode | Score 순위 충돌 해소")
+
+    # [v6.3] 헤지 모드 전환 — 봇 시작 시 1회 실행
+    try:
+        ensure_hedge_mode()
+        logger.info("[MAIN] ✅ 헤지 모드 확인 완료")
+    except RuntimeError as e:
+        logger.error(f"[MAIN] ❌ 헤지 모드 전환 실패 — 봇 종료: {e}")
+        notify_error(f"헤지 모드 전환 실패: {e}")
+        return
 
     while True:
         start = time.time()

@@ -1,22 +1,30 @@
 """
-core/signal_arbiter.py — 필터링 + 타임프레임×Score 정렬 + 심볼 충돌 해소 (v5.3)
+core/signal_arbiter.py — 필터링 + 타임프레임×Score 정렬 + 충돌 해소 (v6.0.1 Hedge Mode)
+
+[v6.0.1] 방향별 15% 자본배분 적용
+  - CAPITAL_ALLOCATION 키: (symbol, direction) 튜플 형식으로 변경
+  - LONG 15% + SHORT 15% = 심볼당 최대 30% (기존 60% 과다 노출 방지)
+
+[v6.0] 헤지 모드 충돌 해소 전면 전환
+  - 동일 심볼에 LONG + SHORT 동시 진입 허용
+  - 충돌 해소 키: symbol → (symbol, direction) 복합 키
+  - 동일 심볼 + 동일 방향 복수 신호 → 가장 큰 TF의 최고 Score 1개만
+  - 동일 심볼 + 반대 방향은 독립 실행 (LONG 1 + SHORT 1)
+  - 포지션 중복 필터: open_positions 키가 "symbol:LONG"/"symbol:SHORT"
 
 [v5.3] 타임프레임 우선순위 기반 충돌 해소
   - 1차 기준: 큰 타임프레임 우선 (1h > 15m > 5m)
-    → 노이즈가 적고 신뢰도 높은 큰 봉의 신호를 우선 실행
   - 2차 기준: 동일 타임프레임 내 WFA Score 내림차순
-  - 동일 심볼 복수 신호 → 가장 큰 타임프레임의 최고 Score 1개만 선택
-
-[v5.0] WFA Score 기반 충돌 해소로 전면 교체
-  - Score = (survived_windows×2) + (min_calmar×3) + ln(1+avg_calmar)
 
 변경사항:
+  v6.0.1: 방향별 15% 자본배분 (CAPITAL_ALLOCATION 키 변경)
+  v6.0: Hedge Mode — (symbol, direction) 단위 충돌 해소
   v5.3: Score → 타임프레임 1차 + Score 2차, 큰 봉 우선
   v5.0: Sharpe → Score, 단일 심볼 최적화, 보고서 순위 반영
-  v2.5: Sharpe 기반 (이전 버전)
 """
 
 from config import MIN_NOTIONAL, CAPITAL_ALLOCATION
+from core.position_manager import make_pos_key
 from utils.logger import get_logger
 
 logger = get_logger("signal_arbiter")
@@ -151,13 +159,16 @@ def arbitrate(signals: list, balance: float, open_positions: dict) -> list:
         tp_mult     = strategy.get("tp_mult", 0.010)
         sl_mult     = strategy.get("sl_mult", 0.005)
 
-        # ── 필터 1: 심볼 포지션 중복 ──────────────────────────
-        if symbol in open_positions:
-            logger.info(f"[ARBITER] SKIP-POS | {strategy_id} — {symbol} 포지션 보유 중")
+        # ── 필터 1: 심볼+방향 포지션 중복 (v6.0 Hedge Mode) ────
+        # 동일 심볼이라도 반대 방향은 허용 (LONG + SHORT 독립)
+        direction = sig.get("direction", "long")
+        pos_key  = make_pos_key(symbol, direction)
+        if pos_key in open_positions:
+            logger.info(f"[ARBITER] SKIP-POS | {strategy_id} — {pos_key} 포지션 보유 중")
             continue
 
-        # ── 필터 2: 최소 명목가치 ─────────────────────────────
-        alloc    = CAPITAL_ALLOCATION.get(symbol, 0)
+        # ── 필터 2: 최소 명목가치 (v6.0.1: 방향별 자본배분) ───
+        alloc    = CAPITAL_ALLOCATION.get((symbol, direction), 0)
         margin   = balance * alloc
         notional = margin * leverage
         min_not  = MIN_NOTIONAL.get(symbol, 100)
@@ -170,7 +181,6 @@ def arbitrate(signals: list, balance: float, open_positions: dict) -> list:
             continue
 
         # ── TP/SL 계산 ───────────────────────────────────────
-        direction = sig.get("direction", "long")
         tp, sl = calc_tp_sl(entry, atr, strategy, direction=direction)
 
         is_long = direction.lower() != "short"
@@ -228,10 +238,9 @@ def arbitrate(signals: list, balance: float, open_positions: dict) -> list:
             "direction": direction,
         })
 
-    # ── [v5.3] 타임프레임 우선 + Score 기반 심볼 충돌 해소 ────────
-    # 1차: 큰 타임프레임 우선 (1h > 15m > 5m) — 노이즈 적고 신뢰도 높음
-    # 2차: 동일 타임프레임 내 Score 내림차순
-    # 동일 심볼에 여러 전략 신호 → 가장 큰 TF의 최고 Score 1개만 선택
+    # ── [v6.0] 타임프레임 우선 + Score 기반 (symbol, direction) 충돌 해소 ──
+    # 헤지 모드: 동일 심볼이라도 LONG/SHORT 독립 허용
+    # 충돌 해소 키: (symbol, direction) — 같은 심볼+방향 복수 → 큰 TF 최고 Score 1개
     executable.sort(
         key=lambda x: (
             TF_PRIORITY.get(x["strategy"]["timeframe"], 0),
@@ -240,31 +249,33 @@ def arbitrate(signals: list, balance: float, open_positions: dict) -> list:
         reverse=True,
     )
 
-    seen_symbols: dict = {}
+    seen_sym_dir: dict = {}  # {(symbol, direction): (strategy_id, tf)}
     deduplicated = []
 
     for sig in executable:
         symbol      = sig["strategy"]["symbol"]
         strategy_id = sig["strategy"]["id"]
         score       = sig["score"]
+        direction   = sig["direction"]
 
         tf          = sig["strategy"]["timeframe"]
-        tf_pri      = TF_PRIORITY.get(tf, 0)
+        conflict_key = (symbol, direction)
 
-        if symbol in seen_symbols:
-            winner_id, winner_tf = seen_symbols[symbol]
+        if conflict_key in seen_sym_dir:
+            winner_id, winner_tf = seen_sym_dir[conflict_key]
             logger.info(
-                f"[ARBITER] SKIP-TF-CONFLICT | {strategy_id} ({tf}, Score {score:.2f}) — "
-                f"{symbol} 이미 {winner_id} ({winner_tf}) 선택됨 (큰 타임프레임 우선)"
+                f"[ARBITER] SKIP-TF-CONFLICT | {strategy_id} ({tf}, {direction.upper()}, Score {score:.2f}) — "
+                f"{symbol} [{direction.upper()}] 이미 {winner_id} ({winner_tf}) 선택됨"
             )
             continue
 
-        seen_symbols[symbol] = (strategy_id, tf)
+        seen_sym_dir[conflict_key] = (strategy_id, tf)
         deduplicated.append(sig)
 
     if deduplicated:
         logger.info(
-            f"[ARBITER] 🏆 최종 실행 신호 {len(deduplicated)}개 (타임프레임 우선 충돌 해소 후):"
+            f"[ARBITER] 🏆 최종 실행 신호 {len(deduplicated)}개 "
+            f"(헤지 모드 — 심볼+방향별 충돌 해소 후):"
         )
         for i, s in enumerate(deduplicated):
             sid = s["strategy"]["id"]
