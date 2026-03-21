@@ -3,12 +3,12 @@ config.py — 전략 목록, 자본배분, MIN_NOTIONAL, 수수료 설정 (v5.3)
 
 [v5.3] 1시간봉 WFA 전략 10개 추가
   - BTCUSDT 15m 10개 + BTCUSDT 5m 10개 + BTCUSDT 1h 10개 = 총 30개 전략
-  - 동일 심볼(BTC/USDT) → 심볼 충돌 시 Score 기반 해소
+  - 동일 심볼(BTC/USDT) → 충돌 시 큰 타임프레임 우선 (1h > 15m > 5m), 동일 TF 내 Score 기반
   - 루프 주기: 5분봉 유지 (5m 매 루프, 15m 3루프, 1h 12루프마다)
 """
 
-# ── 30개 전략 전체 목록 (WFA Score 순위별 정렬) ─────────────
-# 충돌 시 이 리스트 순서(= Score 순위)대로 우선권 부여
+# ── 30개 전략 전체 목록 (타임프레임 우선 정렬: 1h > 15m > 5m, 동일 TF 내 Score순) ──
+# 충돌 시 큰 타임프레임 우선, 동일 TF 내에서는 Score 순위대로 우선권 부여
 ALL_STRATEGIES = [
     # === 1h 전략 (Score 최상위) ===
     "S11_1h_ADX_RSI_WILLR",          # Score 23.27, 1h SHORT 1위, 9윈도우
