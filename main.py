@@ -50,6 +50,13 @@ v2.13:
          - 전략별 최적 TP/SL 매칭: registry의 tp_mult/sl_mult → arbiter → order_manager 흐름 확인
 v2.18:
   [FIX] 텔레그램 알림 중복 발송 완전 수정
+v5.3:
+  [1시간봉 추가] BTCUSDT_1h_WFA_Report.docx 기반 1시간봉 전략 10개 추가
+  - 기존 15m 10개 + 5m 10개 + 1h 10개 = 총 30개 전략
+  - 1h 전략: 12루프마다 평가 (5분×12=1시간), 15m: 3루프마다, 5m: 매 루프
+  - 1h 레버리지: 이론=1/(SL%+0.5%), 권장=이론×80% (상한20x, min_calmar≥1.5→+2)
+  - 1h 황금기준: surv≥6, avg_calmar≥2, min_calmar≥0.5 (272/3194개 통과)
+  - 새 지표: ROC (Rate of Change)
 v5.2:
   [5분봉 추가] BTCUSDT_5m_WFA_Report.docx 기반 5분봉 전략 10개 추가
   - 기존 15m 10개 + 5m 10개 = 총 20개 전략
@@ -379,8 +386,8 @@ def _update_prev_snapshot(
 
 
 def main() -> None:
-    logger.info("🚀 SMRA Bot v5.2 시작 (BTCUSDT 5m+15m WFA 20전략 + Score 충돌 해소 + WFA 레버리지)")
-    logger.info(f"루프 간격: 5분봉 마감 동기화 (288루프/일) | 20개 전략 (5m:매 루프, 15m:3루프마다) | Score 순위 충돌 해소")
+    logger.info("🚀 SMRA Bot v5.3 시작 (BTCUSDT 5m+15m+1h WFA 30전략 + Score 충돌 해소 + WFA 레버리지)")
+    logger.info(f"루프 간격: 5분봉 마감 동기화 (288루프/일) | 30개 전략 (5m:매 루프, 15m:3루프, 1h:12루프마다) | Score 순위 충돌 해소")
 
     while True:
         start = time.time()

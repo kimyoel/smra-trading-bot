@@ -1,37 +1,48 @@
 """
-config.py — 전략 목록, 자본배분, MIN_NOTIONAL, 수수료 설정 (v5.2)
+config.py — 전략 목록, 자본배분, MIN_NOTIONAL, 수수료 설정 (v5.3)
 
-[v5.2] 5분봉 WFA 전략 10개 추가
-  - BTCUSDT 15m 10개 + BTCUSDT 5m 10개 = 총 20개 전략
+[v5.3] 1시간봉 WFA 전략 10개 추가
+  - BTCUSDT 15m 10개 + BTCUSDT 5m 10개 + BTCUSDT 1h 10개 = 총 30개 전략
   - 동일 심볼(BTC/USDT) → 심볼 충돌 시 Score 기반 해소
-  - 루프 주기: 15분봉 → 5분봉으로 변경 (5m 전략 포함)
+  - 루프 주기: 5분봉 유지 (5m 매 루프, 15m 3루프, 1h 12루프마다)
 """
 
-# ── 20개 전략 전체 목록 (WFA Score 순위별 정렬) ─────────────
+# ── 30개 전략 전체 목록 (WFA Score 순위별 정렬) ─────────────
 # 충돌 시 이 리스트 순서(= Score 순위)대로 우선권 부여
 ALL_STRATEGIES = [
-    # === 15m 전략 (Score 상위) ===
-    "S1_WILLR_BB_OBV",              # Score 20.36, 15m SHORT 1위
-    "L1_WILLR_BB_EMA_STACK",        # Score 19.21, 15m LONG 1위
-    "S2_SMA_ICHIMOKU_STDDEV",       # Score 19.36, 15m SHORT 2위
-    "S3_OBV_KELTNER_ADX_INV",       # Score 18.98, 15m SHORT 3위
-    "L2_ADX_WILLR_EMA_STACK",       # Score 18.73, 15m LONG 2위
-    "S4_BB_EMA_STACK",              # Score 18.73, 15m SHORT 4위
-    "S5_BB_EMA_STACK_ATR_INV",      # Score 18.73, 15m SHORT 5위
-    "L3_AROON_DONCHIAN_VOL_INV",    # Score 15.97, 15m LONG 3위
-    "L4_EMA_MACD_PSAR",             # Score 15.64, 15m LONG 4위
-    "L5_EMA_PSAR_MOM",              # Score 15.53, 15m LONG 5위
+    # === 1h 전략 (Score 최상위) ===
+    "S11_1h_ADX_RSI_WILLR",          # Score 23.27, 1h SHORT 1위, 9윈도우
+    "L11_1h_SMA_STDDEV_EMA_STACK",   # Score 22.99, 1h LONG 1위, 7윈도우
+    "S12_1h_ADX_RSI_VOL_INV",        # Score 22.44, 1h SHORT 2위, 8윈도우
+    "L12_1h_EMA_STDDEV_ADX_INV",     # Score 22.40, 1h LONG 2위, 8윈도우
+    "L13_1h_PSAR_AROON_MOM",         # Score 22.25, 1h LONG 3위, 8윈도우
+    "L14_1h_PSAR_AROON_VWAP",        # Score 22.25, 1h LONG 4위, 8윈도우
+    "L15_1h_PSAR_AROON_ROC",         # Score 22.25, 1h LONG 5위, 8윈도우
+    "S13_1h_MACD_STDDEV_VOL_INV",    # Score 22.18, 1h SHORT 3위, 6윈도우
+    "S14_1h_BB_MFI_ADX_INV",         # Score 22.11, 1h SHORT 4위, 6윈도우
+    "S15_1h_CCI_EMA_STACK",          # Score 20.80, 1h SHORT 5위, 7윈도우
+    # === 15m 전략 (Score 중위) ===
+    "S1_WILLR_BB_OBV",               # Score 20.36, 15m SHORT 1위
+    "L1_WILLR_BB_EMA_STACK",         # Score 19.21, 15m LONG 1위
+    "S2_SMA_ICHIMOKU_STDDEV",        # Score 19.36, 15m SHORT 2위
+    "S3_OBV_KELTNER_ADX_INV",        # Score 18.98, 15m SHORT 3위
+    "L2_ADX_WILLR_EMA_STACK",        # Score 18.73, 15m LONG 2위
+    "S4_BB_EMA_STACK",               # Score 18.73, 15m SHORT 4위
+    "S5_BB_EMA_STACK_ATR_INV",       # Score 18.73, 15m SHORT 5위
+    "L3_AROON_DONCHIAN_VOL_INV",     # Score 15.97, 15m LONG 3위
+    "L4_EMA_MACD_PSAR",              # Score 15.64, 15m LONG 4위
+    "L5_EMA_PSAR_MOM",               # Score 15.53, 15m LONG 5위
     # === 5m 전략 (Score 하위, 5분봉 별도 평가) ===
-    "L6_5m_BB_EMA_STACK_VOL_INV",   # Score 14.28, 5m LONG 1위
-    "S6_5m_RSI_WILLR_EMA_STACK",    # Score 13.26, 5m SHORT 1위
-    "L7_5m_MACD_ICHIMOKU_STDDEV",   # Score 12.54, 5m LONG 2위
-    "S7_5m_EMA_ICHIMOKU_VOLUME",    # Score 12.41, 5m SHORT 2위
-    "L8_5m_STOCH_CCI_EMA_STACK",    # Score 12.07, 5m LONG 3위
-    "S8_5m_RSI_EMA_STACK",          # Score 12.05, 5m SHORT 3위
-    "S9_5m_RSI_EMA_STACK_ATR_INV",  # Score 12.05, 5m SHORT 4위
-    "S10_5m_PSAR_MFI_STDDEV",       # Score 11.50, 5m SHORT 5위
-    "L9_5m_CCI_VWAP_AD",            # Score 11.17, 5m LONG 4위
-    "L10_5m_RSI_CCI_EMA_STACK",     # Score 11.04, 5m LONG 5위
+    "L6_5m_BB_EMA_STACK_VOL_INV",    # Score 14.28, 5m LONG 1위
+    "S6_5m_RSI_WILLR_EMA_STACK",     # Score 13.26, 5m SHORT 1위
+    "L7_5m_MACD_ICHIMOKU_STDDEV",    # Score 12.54, 5m LONG 2위
+    "S7_5m_EMA_ICHIMOKU_VOLUME",     # Score 12.41, 5m SHORT 2위
+    "L8_5m_STOCH_CCI_EMA_STACK",     # Score 12.07, 5m LONG 3위
+    "S8_5m_RSI_EMA_STACK",           # Score 12.05, 5m SHORT 3위
+    "S9_5m_RSI_EMA_STACK_ATR_INV",   # Score 12.05, 5m SHORT 4위
+    "S10_5m_PSAR_MFI_STDDEV",        # Score 11.50, 5m SHORT 5위
+    "L9_5m_CCI_VWAP_AD",             # Score 11.17, 5m LONG 4위
+    "L10_5m_RSI_CCI_EMA_STACK",      # Score 11.04, 5m LONG 5위
 ]
 
 # ── 심볼별 최소 명목가치 (거래소 제약 + 여유) ─────────────────

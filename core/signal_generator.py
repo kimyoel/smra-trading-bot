@@ -1,11 +1,12 @@
 """
-core/signal_generator.py — 전략별 entry_fn → 크로스 감지 → 신호 생성 (v5.2)
+core/signal_generator.py — 전략별 entry_fn → 크로스 감지 → 신호 생성 (v5.3)
+
+[v5.3] 1시간봉 전략 추가 지원
+  - 5m/15m/1h 3종 혼합 운용
+  - 5m=매 루프, 15m=3번째 루프, 1h=12번째 루프마다 평가
+  - pre-fetch: BTC/USDT 5m + 15m + 1h 세 캐시 워밍
 
 [v5.2] 5분봉 전략 추가 지원
-  - 5m/15m 혼합 운용: 5m 전략은 매 루프, 15m 전략은 3번째 루프마다 평가
-  - _is_candle_boundary: 5m=항상 True, 15m=5분 정각 중 15의 배수일 때
-  - 데이터 fetch: 5m/15m 각각의 OHLCV 캐시
-
 [v5.0] WFA 전략 entry_fn 아키텍처로 전면 교체
 """
 
@@ -66,18 +67,18 @@ def _check_cross(entry_fn, df_full: pd.DataFrame) -> bool:
         return False  # 유지 중 → 무시
 
 
-# ── [v5.2] 타임프레임별 봉 마감 체크 ──────────────────────────
-# 5m 루프 기준: 5m=매 루프, 15m=3번째 루프(15분 정각), 1h/4h=기존
+# ── [v5.3] 타임프레임별 봉 마감 체크 ──────────────────────────
+# 5m 루프 기준: 5m=매 루프, 15m=3번째 루프(15분 정각), 1h=12번째 루프(정시)
 _TF_SECONDS = {"5m": 300, "15m": 900, "1h": 3600, "4h": 14400}
 
 
 def _is_candle_boundary(timeframe: str, utc_now: datetime | None = None) -> bool:
     """
-    [v5.2] 현재 UTC 시각이 해당 타임프레임의 봉 마감 직후인지 판단.
+    [v5.3] 현재 UTC 시각이 해당 타임프레임의 봉 마감 직후인지 판단.
     5분봉 루프 기준:
       5m  → 항상 True (매 루프)
       15m → minute이 0, 15, 30, 45일 때만 True
-      1h  → minute == 0
+      1h  → minute == 0 (정시, 12번째 루프마다)
       4h  → hour % 4 == 0 and minute == 0
     """
     if utc_now is None:
@@ -100,11 +101,12 @@ def _is_candle_boundary(timeframe: str, utc_now: datetime | None = None) -> bool
 
 def generate_all_signals() -> list[dict]:
     """
-    config.ALL_STRATEGIES에 등록된 전략만 감시/매매. (v5.2)
+    config.ALL_STRATEGIES에 등록된 전략만 감시/매매. (v5.3)
 
-    [v5.2 변경점]
-      - 5m + 15m 혼합 운용 (5m 전략 매 루프, 15m 전략 3루프마다)
-      - pre-fetch: BTC/USDT 5m + BTC/USDT 15m 두 캐시 워밍
+    [v5.3 변경점]
+      - 5m + 15m + 1h 3종 혼합 운용
+      - 5m=매 루프, 15m=3루프마다, 1h=12루프마다
+      - pre-fetch: BTC/USDT 5m + 15m + 1h 세 캐시 워밍
     """
     signals = []
     utc_now = datetime.now(timezone.utc)
