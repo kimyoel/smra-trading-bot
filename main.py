@@ -50,6 +50,14 @@ v2.13:
          - 전략별 최적 TP/SL 매칭: registry의 tp_mult/sl_mult → arbiter → order_manager 흐름 확인
 v2.18:
   [FIX] 텔레그램 알림 중복 발송 완전 수정
+v5.4:
+  [4시간봉 추가] BTCUSDT_4h_WFA_Report.docx 기반 4시간봉 전략 10개 추가
+  - 기존 15m 10개 + 5m 10개 + 1h 10개 + 4h 10개 = 총 40개 전략
+  - 4h 전략: 48루프마다 평가 (5분×48=4시간)
+  - 4h 레버리지: 이론=1/(SL%+0.5%), 권장=이론×80% (상한20x)
+  - 4h 황금기준: surv≥6, avg_calmar≥2, min_calmar≥0.5 (443/1894개 통과)
+  - 새 지표: CMF (Chaikin Money Flow)
+  - 충돌 해소: 4h > 1h > 15m > 5m (큰 타임프레임 우선)
 v5.3:
   [1시간봉 추가] BTCUSDT_1h_WFA_Report.docx 기반 1시간봉 전략 10개 추가
   - 기존 15m 10개 + 5m 10개 + 1h 10개 = 총 30개 전략
@@ -386,8 +394,8 @@ def _update_prev_snapshot(
 
 
 def main() -> None:
-    logger.info("🚀 SMRA Bot v5.3 시작 (BTCUSDT 5m+15m+1h WFA 30전략 + Score 충돌 해소 + WFA 레버리지)")
-    logger.info(f"루프 간격: 5분봉 마감 동기화 (288루프/일) | 30개 전략 (5m:매 루프, 15m:3루프, 1h:12루프마다) | Score 순위 충돌 해소")
+    logger.info("🚀 SMRA Bot v5.4 시작 (BTCUSDT 5m+15m+1h+4h WFA 40전략 + Score 충돌 해소 + WFA 레버리지)")
+    logger.info(f"루프 간격: 5분봉 마감 동기화 (288루프/일) | 40개 전략 (5m:매 루프, 15m:3루프, 1h:12루프, 4h:48루프마다) | Score 순위 충돌 해소")
 
     while True:
         start = time.time()
