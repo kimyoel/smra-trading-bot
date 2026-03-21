@@ -50,6 +50,13 @@ v2.13:
          - 전략별 최적 TP/SL 매칭: registry의 tp_mult/sl_mult → arbiter → order_manager 흐름 확인
 v2.18:
   [FIX] 텔레그램 알림 중복 발송 완전 수정
+v5.5:
+  [ETH 추가] ETHUSDT_5m_WFA_Report.docx 기반 ETH 5분봉 전략 10개 추가
+  - BTC 40개 + ETH 10개 = 총 50개 전략
+  - 자본배분: BTC 60%, ETH 30%, 여유 10%
+  - ETH 5m: 742개 전략, 완화기준 102개(13.7%), 황금기준 20개(2.7%)
+  - ETH 레버리지: 이론=1/(SL%+0.5%), 권장=이론×80% (상한20x, SL<1% 슬리피지 감안)
+  - BTC↔ETH 독립 진입 가능 (심볼 충돌 없음)
 v5.4:
   [4시간봉 추가] BTCUSDT_4h_WFA_Report.docx 기반 4시간봉 전략 10개 추가
   - 기존 15m 10개 + 5m 10개 + 1h 10개 + 4h 10개 = 총 40개 전략
@@ -394,8 +401,8 @@ def _update_prev_snapshot(
 
 
 def main() -> None:
-    logger.info("🚀 SMRA Bot v5.4 시작 (BTCUSDT 5m+15m+1h+4h WFA 40전략 + Score 충돌 해소 + WFA 레버리지)")
-    logger.info(f"루프 간격: 5분봉 마감 동기화 (288루프/일) | 40개 전략 (5m:매 루프, 15m:3루프, 1h:12루프, 4h:48루프마다) | Score 순위 충돌 해소")
+    logger.info("🚀 SMRA Bot v5.5 시작 (BTC 5m+15m+1h+4h + ETH 5m WFA 50전략 + Score 충돌 해소 + WFA 레버리지)")
+    logger.info(f"루프 간격: 5분봉 마감 동기화 (288루프/일) | 50개 전략 (BTC 40 + ETH 10) | Score 순위 충돌 해소")
 
     while True:
         start = time.time()

@@ -1,5 +1,10 @@
 """
-strategies/indicators.py — WFA 전략별 복합 진입 조건 함수 (v5.4)
+strategies/indicators.py — WFA 전략별 복합 진입 조건 함수 (v5.5)
+
+[v5.5] ETHUSDT 5분봉 WFA 전략 진입 함수 10개 추가
+  - ETHUSDT_5m_WFA_Report.docx 기반
+  - LONG 5개 + SHORT 5개 (ETH 5분봉 전용)
+  - 모든 지표 헬퍼는 기존 BTC와 공유 (심볼 무관 — df 기반)
 
 [v5.4] 4시간봉 WFA 전략 진입 함수 10개 추가
   - BTCUSDT_4h_WFA_Report.docx 기반
@@ -1521,6 +1526,262 @@ def entry_short_4h_adx_cmf_vol_inv(df: pd.DataFrame) -> bool:
 
 
 # ═══════════════════════════════════════════════════════════════
+# ETHUSDT 5분봉 LONG 전략 진입 함수 (5개)
+# ═══════════════════════════════════════════════════════════════
+
+def entry_long_eth5m_willr_ichimoku_aroon(df: pd.DataFrame) -> bool:
+    """
+    ETH 5m LONG #1: 3_WILLR_ICHIMOKU_AROON (Score 22.84)
+    진입: WR(14)<-80 AND Tenkan>Kijun AND AroonUp(25)>70
+    """
+    wr = _willr(df, 14)
+    if wr is None or wr >= -80:
+        return False
+
+    tenkan, kijun = _ichimoku(df)
+    if tenkan is None or kijun is None:
+        return False
+    if tenkan <= kijun:
+        return False
+
+    aroon_up, _ = _aroon(df, 25)
+    if aroon_up is None or aroon_up <= 70:
+        return False
+
+    return True
+
+
+def entry_long_eth5m_adx_stoch_ema_stack(df: pd.DataFrame) -> bool:
+    """
+    ETH 5m LONG #2: 3_ADX_STOCH_EMA_STACK (Score 19.17)
+    진입: %K(14)<20 상향전환 AND EMA5>EMA26>EMA50
+    필터: ADX(14)>25
+    """
+    k_curr, k_prev = _stoch_k(df, 14)
+    if k_curr is None or k_prev is None:
+        return False
+    if k_curr >= 20 or k_curr <= k_prev:
+        return False
+
+    ema5  = _ema(df, 5)
+    ema26 = _ema(df, 26)
+    ema50 = _ema(df, 50)
+    if ema5 is None or ema26 is None or ema50 is None:
+        return False
+    if not (ema5 > ema26 > ema50):
+        return False
+
+    adx = _adx_value(df, 14)
+    if adx is None or adx <= 25:
+        return False
+
+    return True
+
+
+def entry_long_eth5m_sma_adx_psar(df: pd.DataFrame) -> bool:
+    """
+    ETH 5m LONG #3: 3_SMA_ADX_PSAR (Score 17.60)
+    진입: SMA10>SMA20 AND SAR↑(0.02,0.2)
+    필터: ADX(14)>25
+    """
+    sma10 = _sma(df, "close", 10)
+    sma20 = _sma(df, "close", 20)
+    if sma10 is None or sma20 is None:
+        return False
+    if sma10 <= sma20:
+        return False
+
+    psar_dir = _psar(df)
+    if psar_dir != "long":
+        return False
+
+    adx = _adx_value(df, 14)
+    if adx is None or adx <= 25:
+        return False
+
+    return True
+
+
+def entry_long_eth5m_bb_atr_sig_ema_stack(df: pd.DataFrame) -> bool:
+    """
+    ETH 5m LONG #4: 3_BB_ATR_SIG_EMA_STACK (Score 17.24)
+    진입: Close<BB_lo(20,2) AND EMA5>EMA26>EMA50
+    필터: ATR(14)>ATR_SMA(20)
+    """
+    bb_lower, _, _ = _bb(df, 20, 2.0)
+    if bb_lower is None:
+        return False
+    close = float(df["close"].iloc[-1])
+    if close >= bb_lower:
+        return False
+
+    ema5  = _ema(df, 5)
+    ema26 = _ema(df, 26)
+    ema50 = _ema(df, 50)
+    if ema5 is None or ema26 is None or ema50 is None:
+        return False
+    if not (ema5 > ema26 > ema50):
+        return False
+
+    atr_val, atr_sma_val = _atr(df, 14)
+    if atr_val is None or atr_sma_val is None:
+        return False
+    if atr_val <= atr_sma_val:
+        return False
+
+    return True
+
+
+def entry_long_eth5m_rsi_ema_stack(df: pd.DataFrame) -> bool:
+    """
+    ETH 5m LONG #5: 2_RSI_EMA_STACK (Score 16.62)
+    진입: RSI(14)<30 AND EMA5>EMA26>EMA50
+    """
+    rsi_val = _rsi(df, 14)
+    if rsi_val is None or rsi_val >= 30:
+        return False
+
+    ema5  = _ema(df, 5)
+    ema26 = _ema(df, 26)
+    ema50 = _ema(df, 50)
+    if ema5 is None or ema26 is None or ema50 is None:
+        return False
+    if not (ema5 > ema26 > ema50):
+        return False
+
+    return True
+
+
+# ═══════════════════════════════════════════════════════════════
+# ETHUSDT 5분봉 SHORT 전략 진입 함수 (5개)
+# ═══════════════════════════════════════════════════════════════
+
+def entry_short_eth5m_stoch_obv_mfi(df: pd.DataFrame) -> bool:
+    """
+    ETH 5m SHORT #1: 3_STOCH_OBV_MFI (Score 19.89)
+    진입: %K(14)>80 하향전환 AND OBV<OBV_SMA(20) AND MFI(14)>80
+    """
+    k_curr, k_prev = _stoch_k(df, 14)
+    if k_curr is None or k_prev is None:
+        return False
+    if k_curr <= 80 or k_curr >= k_prev:
+        return False
+
+    obv_val, obv_sma_val = _obv(df)
+    if obv_val is None or obv_sma_val is None:
+        return False
+    if obv_val >= obv_sma_val:
+        return False
+
+    mfi_val = _mfi(df, 14)
+    if mfi_val is None or mfi_val <= 80:
+        return False
+
+    return True
+
+
+def entry_short_eth5m_sma_macd_stddev(df: pd.DataFrame) -> bool:
+    """
+    ETH 5m SHORT #2: 3_SMA_MACD_STDDEV (Score 17.23)
+    진입: SMA10<SMA20 AND MACD<Sig(12,26,9) AND STD↑&Close<SMA(20)
+    """
+    sma10 = _sma(df, "close", 10)
+    sma20 = _sma(df, "close", 20)
+    if sma10 is None or sma20 is None:
+        return False
+    if sma10 >= sma20:
+        return False
+
+    macd_val, signal_val, _ = _macd(df, 12, 26, 9)
+    if macd_val is None or signal_val is None:
+        return False
+    if macd_val >= signal_val:
+        return False
+
+    _, _, is_expanding = _stddev(df, 20)
+    if not is_expanding:
+        return False
+
+    close = float(df["close"].iloc[-1])
+    if close >= sma20:
+        return False
+
+    return True
+
+
+def entry_short_eth5m_adx_rsi_ema_stack(df: pd.DataFrame) -> bool:
+    """
+    ETH 5m SHORT #3: 3_ADX_RSI_EMA_STACK (Score 16.34)
+    진입: RSI(14)>70 AND EMA5<EMA26<EMA50
+    필터: ADX(14)>25
+    """
+    rsi_val = _rsi(df, 14)
+    if rsi_val is None or rsi_val <= 70:
+        return False
+
+    ema5  = _ema(df, 5)
+    ema26 = _ema(df, 26)
+    ema50 = _ema(df, 50)
+    if ema5 is None or ema26 is None or ema50 is None:
+        return False
+    if not (ema5 < ema26 < ema50):
+        return False
+
+    adx = _adx_value(df, 14)
+    if adx is None or adx <= 25:
+        return False
+
+    return True
+
+
+def entry_short_eth5m_aroon_cci_ema_stack(df: pd.DataFrame) -> bool:
+    """
+    ETH 5m SHORT #4: 3_AROON_CCI_EMA_STACK (Score 16.16)
+    진입: AroonDown(25)>70 AND CCI(20)>+100 AND EMA5<EMA26<EMA50
+    """
+    _, aroon_down = _aroon(df, 25)
+    if aroon_down is None or aroon_down <= 70:
+        return False
+
+    cci_val = _cci(df, 20)
+    if cci_val is None or cci_val <= 100:
+        return False
+
+    ema5  = _ema(df, 5)
+    ema26 = _ema(df, 26)
+    ema50 = _ema(df, 50)
+    if ema5 is None or ema26 is None or ema50 is None:
+        return False
+    if not (ema5 < ema26 < ema50):
+        return False
+
+    return True
+
+
+def entry_short_eth5m_adx_psar_ichimoku(df: pd.DataFrame) -> bool:
+    """
+    ETH 5m SHORT #5: 3_ADX_PSAR_ICHIMOKU (Score 15.38)
+    진입: SAR↓(0.02,0.2) AND Tenkan<Kijun
+    필터: ADX(14)>25
+    """
+    psar_dir = _psar(df)
+    if psar_dir != "short":
+        return False
+
+    tenkan, kijun = _ichimoku(df)
+    if tenkan is None or kijun is None:
+        return False
+    if tenkan >= kijun:
+        return False
+
+    adx = _adx_value(df, 14)
+    if adx is None or adx <= 25:
+        return False
+
+    return True
+
+
+# ═══════════════════════════════════════════════════════════════
 # entry_fn 이름 → 함수 매핑
 # ═══════════════════════════════════════════════════════════════
 ENTRY_FN_MAP = {
@@ -1572,4 +1833,16 @@ ENTRY_FN_MAP = {
     "entry_short_4h_willr_bb":               entry_short_4h_willr_bb,
     "entry_short_4h_willr_bb_atr_inv":       entry_short_4h_willr_bb_atr_inv,
     "entry_short_4h_adx_cmf_vol_inv":        entry_short_4h_adx_cmf_vol_inv,
+    # ETH 5m LONG 전략
+    "entry_long_eth5m_willr_ichimoku_aroon":  entry_long_eth5m_willr_ichimoku_aroon,
+    "entry_long_eth5m_adx_stoch_ema_stack":   entry_long_eth5m_adx_stoch_ema_stack,
+    "entry_long_eth5m_sma_adx_psar":          entry_long_eth5m_sma_adx_psar,
+    "entry_long_eth5m_bb_atr_sig_ema_stack":  entry_long_eth5m_bb_atr_sig_ema_stack,
+    "entry_long_eth5m_rsi_ema_stack":         entry_long_eth5m_rsi_ema_stack,
+    # ETH 5m SHORT 전략
+    "entry_short_eth5m_stoch_obv_mfi":        entry_short_eth5m_stoch_obv_mfi,
+    "entry_short_eth5m_sma_macd_stddev":      entry_short_eth5m_sma_macd_stddev,
+    "entry_short_eth5m_adx_rsi_ema_stack":    entry_short_eth5m_adx_rsi_ema_stack,
+    "entry_short_eth5m_aroon_cci_ema_stack":  entry_short_eth5m_aroon_cci_ema_stack,
+    "entry_short_eth5m_adx_psar_ichimoku":    entry_short_eth5m_adx_psar_ichimoku,
 }

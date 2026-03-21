@@ -1,14 +1,14 @@
 """
-strategies/registry.py — WFA OOS 백테스트 검증 전략 레지스트리 (v5.4)
+strategies/registry.py — WFA OOS 백테스트 검증 전략 레지스트리 (v5.5)
+
+[v5.5] ETHUSDT 5분봉 WFA 전략 10개 추가
+  - 출처: ETHUSDT_5m_WFA_Report.docx (2026-03-21)
+  - LONG 5개 + SHORT 5개 (ETH 5분봉 완화기준: surv≥4, avg≥1.5, min≥0.4)
+  - 742개 전략 중 102개(13.7%) 완화기준 통과, 20개(2.7%) 황금기준 통과
+  - 레버리지: 이론 = 1/(SL%+0.5%), 권장 = 이론×80% (상한 20x, SL<1% 슬리피지 추가 감안)
+  - 총 50개 전략: BTC(5m×10+15m×10+1h×10+4h×10) + ETH(5m×10)
 
 [v5.4] BTCUSDT 4시간봉 WFA 전략 10개 추가
-  - 출처: BTCUSDT_4h_WFA_Report.docx (2026-03-21)
-  - LONG 5개 + SHORT 5개 (4시간봉 황금기준: surv≥6, avg≥2, min≥0.5)
-  - 4시간봉 특성: 1,894개 전략, 황금기준 443개(23.4%) — 전 타임프레임 최고 강건성
-  - survived_windows 중앙값 5.3, 범위 3~10
-  - 레버리지: 이론 = 1/(SL%+0.5%), 권장 = 이론×80% (상한 20x)
-  - 총 40개 전략: 5m×10 + 15m×10 + 1h×10 + 4h×10
-
 [v5.3] BTCUSDT 1시간봉 WFA 전략 10개 추가
 [v5.2] BTCUSDT 5분봉 WFA 전략 10개 추가
 [v5.1] 레버리지 설정 — 15분봉 WFA 보고서 레버리지 섹션 반영
@@ -921,5 +921,230 @@ STRATEGY_REGISTRY = {
         "sl_mult":        0.05,      # SL 5.0%
         "base_mdd":       0.05,
         "max_hold_bars":  24,        # 24봉 (4일)
+    },
+
+    # ═══════════════════════════════════════════════════════════
+    # ETHUSDT 5분봉 LONG 전략 — 상위 5개 (ETHUSDT_5m_WFA_Report.docx)
+    # 742개 전략, 완화기준(surv≥4, avg≥1.5, min≥0.4) 102개(13.7%)
+    # 레버리지: 이론=1/(SL%+0.5%), 권장=이론×80% (상한20x, SL<1% 슬리피지 감안)
+    # ═══════════════════════════════════════════════════════════
+
+    # ETH 5m LONG #1 — Score 22.84 | 전체 1위 LONG, min_calmar 3.515
+    # 진입: WR(14)<-80 AND Tenkan>Kijun AND AroonUp(25)>70
+    "EL1_eth5m_WILLR_ICHIMOKU_AROON": {
+        "id":             "EL1_eth5m_WILLR_ICHIMOKU_AROON",
+        "symbol":         "ETH/USDT",
+        "timeframe":      "5m",
+        "direction":      "long",
+        "entry_fn":       "entry_long_eth5m_willr_ichimoku_aroon",
+        "score":          22.84,
+        "survived_windows": 5,
+        "avg_calmar":     8.9222,
+        "min_calmar":     3.5150,
+        "leverage":       20,       # 이론: 1/(0.015+0.005)=50x, 권장: →상한20x
+        "max_leverage":   50,       # 이론: floor(1/(0.015+0.005))=50
+        "tp_type":        "fixed",
+        "tp_mult":        0.04,      # TP 4.0%
+        "sl_mult":        0.015,     # SL 1.5%
+        "base_mdd":       0.015,
+        "max_hold_bars":  24,        # 24봉 (2시간)
+    },
+
+    # ETH 5m LONG #2 — Score 19.17 | min_calmar 3.153 (최고 안정성)
+    # 진입: Stoch %K(14)<20 상향전환 AND EMA5>EMA26>EMA50
+    # 필터: ADX(14)>25
+    "EL2_eth5m_ADX_STOCH_EMA_STACK": {
+        "id":             "EL2_eth5m_ADX_STOCH_EMA_STACK",
+        "symbol":         "ETH/USDT",
+        "timeframe":      "5m",
+        "direction":      "long",
+        "entry_fn":       "entry_long_eth5m_adx_stoch_ema_stack",
+        "score":          19.17,
+        "survived_windows": 4,
+        "avg_calmar":     4.5390,
+        "min_calmar":     3.1525,
+        "leverage":       20,       # 이론: 1/(0.03+0.005)=28.6x, 권장: →상한20x
+        "max_leverage":   28,       # 이론: floor(1/(0.03+0.005))=28
+        "tp_type":        "fixed",
+        "tp_mult":        0.04,      # TP 4.0%
+        "sl_mult":        0.03,      # SL 3.0%
+        "base_mdd":       0.03,
+        "max_hold_bars":  48,        # 48봉 (4시간)
+    },
+
+    # ETH 5m LONG #3 — Score 17.60 | 6윈도우 최다 생존
+    # 진입: SMA10>SMA20 AND SAR↑(0.02,0.2)
+    # 필터: ADX(14)>25
+    "EL3_eth5m_SMA_ADX_PSAR": {
+        "id":             "EL3_eth5m_SMA_ADX_PSAR",
+        "symbol":         "ETH/USDT",
+        "timeframe":      "5m",
+        "direction":      "long",
+        "entry_fn":       "entry_long_eth5m_sma_adx_psar",
+        "score":          17.60,
+        "survived_windows": 6,
+        "avg_calmar":     3.9353,
+        "min_calmar":     1.3361,
+        "leverage":       20,       # 이론: 1/(0.025+0.005)=33.3x, 권장: →상한20x
+        "max_leverage":   33,       # 이론: floor(1/(0.025+0.005))=33
+        "tp_type":        "fixed",
+        "tp_mult":        0.05,      # TP 5.0%
+        "sl_mult":        0.025,     # SL 2.5%
+        "base_mdd":       0.025,
+        "max_hold_bars":  48,        # 48봉 (4시간)
+    },
+
+    # ETH 5m LONG #4 — Score 17.24 | avg_calmar 19.91 (극고 수익)
+    # 진입: Close<BB_lo(20,2) AND EMA5>EMA26>EMA50
+    # 필터: ATR(14)>ATR_SMA(20)
+    "EL4_eth5m_BB_ATR_SIG_EMA_STACK": {
+        "id":             "EL4_eth5m_BB_ATR_SIG_EMA_STACK",
+        "symbol":         "ETH/USDT",
+        "timeframe":      "5m",
+        "direction":      "long",
+        "entry_fn":       "entry_long_eth5m_bb_atr_sig_ema_stack",
+        "score":          17.24,
+        "survived_windows": 5,
+        "avg_calmar":     19.9093,
+        "min_calmar":     1.3998,
+        "leverage":       20,       # 이론: 33.3x, 권장: →상한20x
+        "max_leverage":   33,       # 이론: floor(1/(0.025+0.005))=33
+        "tp_type":        "fixed",
+        "tp_mult":        0.05,      # TP 5.0%
+        "sl_mult":        0.025,     # SL 2.5%
+        "base_mdd":       0.025,
+        "max_hold_bars":  48,        # 48봉 (4시간)
+    },
+
+    # ETH 5m LONG #5 — Score 16.62 | 단순 2지표, 고RR
+    # 진입: RSI(14)<30 AND EMA5>EMA26>EMA50
+    "EL5_eth5m_RSI_EMA_STACK": {
+        "id":             "EL5_eth5m_RSI_EMA_STACK",
+        "symbol":         "ETH/USDT",
+        "timeframe":      "5m",
+        "direction":      "long",
+        "entry_fn":       "entry_long_eth5m_rsi_ema_stack",
+        "score":          16.62,
+        "survived_windows": 4,
+        "avg_calmar":     3.6307,
+        "min_calmar":     2.3631,
+        "leverage":       20,       # 이론: 1/(0.01+0.005)=66.7x, 권장: →상한20x
+        "max_leverage":   66,       # 이론: floor(1/(0.01+0.005))=66
+        "tp_type":        "fixed",
+        "tp_mult":        0.02,      # TP 2.0%
+        "sl_mult":        0.01,      # SL 1.0%
+        "base_mdd":       0.01,
+        "max_hold_bars":  48,        # 48봉 (4시간)
+    },
+
+    # ═══════════════════════════════════════════════════════════
+    # ETHUSDT 5분봉 SHORT 전략 — 상위 5개 (ETHUSDT_5m_WFA_Report.docx)
+    # ═══════════════════════════════════════════════════════════
+
+    # ETH 5m SHORT #1 — Score 19.89 | SHORT 종합 1위
+    # 진입: Stoch %K(14)>80 하향전환 AND OBV<OBV_SMA(20) AND MFI(14)>80
+    "ES1_eth5m_STOCH_OBV_MFI": {
+        "id":             "ES1_eth5m_STOCH_OBV_MFI",
+        "symbol":         "ETH/USDT",
+        "timeframe":      "5m",
+        "direction":      "short",
+        "entry_fn":       "entry_short_eth5m_stoch_obv_mfi",
+        "score":          19.89,
+        "survived_windows": 5,
+        "avg_calmar":     8.1146,
+        "min_calmar":     2.5611,
+        "leverage":       20,       # 이론: 1/(0.02+0.005)=40x, 권장: →상한20x
+        "max_leverage":   40,       # 이론: floor(1/(0.02+0.005))=40
+        "tp_type":        "fixed",
+        "tp_mult":        0.05,      # TP 5.0%
+        "sl_mult":        0.02,      # SL 2.0%
+        "base_mdd":       0.02,
+        "max_hold_bars":  48,        # 48봉 (4시간)
+    },
+
+    # ETH 5m SHORT #2 — Score 17.23 | 타이트 SL 0.5%
+    # 진입: SMA10<SMA20 AND MACD<Sig(12,26,9) AND STD↑&Close<SMA(20)
+    "ES2_eth5m_SMA_MACD_STDDEV": {
+        "id":             "ES2_eth5m_SMA_MACD_STDDEV",
+        "symbol":         "ETH/USDT",
+        "timeframe":      "5m",
+        "direction":      "short",
+        "entry_fn":       "entry_short_eth5m_sma_macd_stddev",
+        "score":          17.23,
+        "survived_windows": 5,
+        "avg_calmar":     3.0151,
+        "min_calmar":     1.9473,
+        "leverage":       10,       # 이론: 1/(0.005+0.005)=100x, 권장: 10x (SL<1% 슬리피지 감안)
+        "max_leverage":   100,      # 이론: floor(1/(0.005+0.005))=100
+        "tp_type":        "fixed",
+        "tp_mult":        0.05,      # TP 5.0%
+        "sl_mult":        0.005,     # SL 0.5%
+        "base_mdd":       0.005,
+        "max_hold_bars":  48,        # 48봉 (4시간)
+    },
+
+    # ETH 5m SHORT #3 — Score 16.34 | ADX 추세 강도 필터
+    # 진입: RSI(14)>70 AND EMA5<EMA26<EMA50
+    # 필터: ADX(14)>25
+    "ES3_eth5m_ADX_RSI_EMA_STACK": {
+        "id":             "ES3_eth5m_ADX_RSI_EMA_STACK",
+        "symbol":         "ETH/USDT",
+        "timeframe":      "5m",
+        "direction":      "short",
+        "entry_fn":       "entry_short_eth5m_adx_rsi_ema_stack",
+        "score":          16.34,
+        "survived_windows": 5,
+        "avg_calmar":     6.9775,
+        "min_calmar":     1.4210,
+        "leverage":       12,       # 이론: 1/(0.008+0.005)=76.9x, 권장: 12x (SL<1% 슬리피지 감안)
+        "max_leverage":   76,       # 이론: floor(1/(0.008+0.005))=76
+        "tp_type":        "fixed",
+        "tp_mult":        0.06,      # TP 6.0%
+        "sl_mult":        0.008,     # SL 0.8%
+        "base_mdd":       0.008,
+        "max_hold_bars":  48,        # 48봉 (4시간)
+    },
+
+    # ETH 5m SHORT #4 — Score 16.16 | 6윈도우 최다 생존
+    # 진입: AroonDown(25)>70 AND CCI(20)>+100 AND EMA5<EMA26<EMA50
+    "ES4_eth5m_AROON_CCI_EMA_STACK": {
+        "id":             "ES4_eth5m_AROON_CCI_EMA_STACK",
+        "symbol":         "ETH/USDT",
+        "timeframe":      "5m",
+        "direction":      "short",
+        "entry_fn":       "entry_short_eth5m_aroon_cci_ema_stack",
+        "score":          16.16,
+        "survived_windows": 6,
+        "avg_calmar":     2.5762,
+        "min_calmar":     0.9614,
+        "leverage":       14,       # 이론: 1/(0.05+0.005)=18.2x, 권장: 14x
+        "max_leverage":   18,       # 이론: floor(1/(0.05+0.005))=18
+        "tp_type":        "fixed",
+        "tp_mult":        0.08,      # TP 8.0%
+        "sl_mult":        0.05,      # SL 5.0%
+        "base_mdd":       0.05,
+        "max_hold_bars":  24,        # 24봉 (2시간)
+    },
+
+    # ETH 5m SHORT #5 — Score 15.38 | 6윈도우, 이치모쿠+PSAR
+    # 진입: SAR↓(0.02,0.2) AND Tenkan<Kijun
+    # 필터: ADX(14)>25
+    "ES5_eth5m_ADX_PSAR_ICHIMOKU": {
+        "id":             "ES5_eth5m_ADX_PSAR_ICHIMOKU",
+        "symbol":         "ETH/USDT",
+        "timeframe":      "5m",
+        "direction":      "short",
+        "entry_fn":       "entry_short_eth5m_adx_psar_ichimoku",
+        "score":          15.38,
+        "survived_windows": 6,
+        "avg_calmar":     2.6877,
+        "min_calmar":     0.6929,
+        "leverage":       20,       # 이론: 1/(0.02+0.005)=40x, 권장: →상한20x
+        "max_leverage":   40,       # 이론: floor(1/(0.02+0.005))=40
+        "tp_type":        "fixed",
+        "tp_mult":        0.04,      # TP 4.0%
+        "sl_mult":        0.02,      # SL 2.0%
+        "base_mdd":       0.02,
+        "max_hold_bars":  48,        # 48봉 (4시간)
     },
 }
