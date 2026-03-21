@@ -1,15 +1,17 @@
 """
-core/signal_arbiter.py — 필터링 + Score 정렬 + 심볼 충돌 해소 (v5.0)
+core/signal_arbiter.py — 필터링 + 타임프레임×Score 정렬 + 심볼 충돌 해소 (v5.3)
+
+[v5.3] 타임프레임 우선순위 기반 충돌 해소
+  - 1차 기준: 큰 타임프레임 우선 (1h > 15m > 5m)
+    → 노이즈가 적고 신뢰도 높은 큰 봉의 신호를 우선 실행
+  - 2차 기준: 동일 타임프레임 내 WFA Score 내림차순
+  - 동일 심볼 복수 신호 → 가장 큰 타임프레임의 최고 Score 1개만 선택
 
 [v5.0] WFA Score 기반 충돌 해소로 전면 교체
-  - 기존: Sharpe 비율 기반 심볼 충돌 해소
-  - 변경: WFA 종합 Score 기반 심볼 충돌 해소
-    Score = (survived_windows×2) + (min_calmar×3) + ln(1+avg_calmar)
-  - 동일 심볼 복수 신호 → Score 최고 1개만 선택
-  - 모든 전략이 BTCUSDT 15m → 심볼 충돌 = 1개만 실행
-  - TP/SL 계산: 기존 fixed/atr 구조 유지 (모든 WFA 전략은 fixed)
+  - Score = (survived_windows×2) + (min_calmar×3) + ln(1+avg_calmar)
 
 변경사항:
+  v5.3: Score → 타임프레임 1차 + Score 2차, 큰 봉 우선
   v5.0: Sharpe → Score, 단일 심볼 최적화, 보고서 순위 반영
   v2.5: Sharpe 기반 (이전 버전)
 """
@@ -18,6 +20,15 @@ from config import MIN_NOTIONAL, CAPITAL_ALLOCATION
 from utils.logger import get_logger
 
 logger = get_logger("signal_arbiter")
+
+# ── 타임프레임 우선순위 (큰 봉일수록 높은 가중치) ──────────────────
+# 충돌 해소 시 1차 정렬 기준: 높을수록 우선
+TF_PRIORITY = {
+    "4h": 400,
+    "1h": 300,
+    "15m": 200,
+    "5m": 100,
+}
 
 # ── 수수료 상수 ────────────────────────────────────────────────────
 TAKER_FEE_RATE  = 0.00045   # 0.045%
@@ -110,12 +121,13 @@ def _log_fee_analysis(
 
 def arbitrate(signals: list, balance: float, open_positions: dict) -> list:
     """
-    신호 필터링 후 Score 정렬된 실행 가능 신호 반환. (v5.0)
+    신호 필터링 후 타임프레임×Score 정렬된 실행 가능 신호 반환. (v5.3)
 
-    [v5.0 변경점]
-      - Sharpe → Score 기반 정렬 및 충돌 해소
-      - 동일 심볼 복수 신호 시 Score 최고 1개만 실행
-      - 다른 방향(LONG vs SHORT) 동시 신호도 Score 우선 1개만
+    [v5.3 변경점]
+      - 1차: 큰 타임프레임 우선 (1h > 15m > 5m)
+      - 2차: 동일 타임프레임 내 Score 내림차순
+      - 동일 심볼 복수 신호 → 가장 큰 TF의 최고 Score 1개만 실행
+      - 이유: 큰 봉은 노이즈 적고, WFA 생존윈도우 넓어 신뢰도 높음
 
     Args:
         signals:        generate_all_signals() 반환값
@@ -123,7 +135,7 @@ def arbitrate(signals: list, balance: float, open_positions: dict) -> list:
         open_positions: {symbol: position_info} 현재 보유 포지션
 
     Returns:
-        실행 가능한 신호 리스트 (Score 내림차순)
+        실행 가능한 신호 리스트 (타임프레임 우선, Score 내림차순)
     """
     executable = []
 
@@ -216,10 +228,17 @@ def arbitrate(signals: list, balance: float, open_positions: dict) -> list:
             "direction": direction,
         })
 
-    # ── [v5.0] Score 기반 심볼 충돌 해소 ──────────────────────
-    # 같은 심볼에 여러 전략 신호 → Score 최고 1개만 선택
-    # 모든 전략이 BTC/USDT 15m이므로, 실질적으로 1루프 최대 1개 신호 실행
-    executable.sort(key=lambda x: x["score"], reverse=True)
+    # ── [v5.3] 타임프레임 우선 + Score 기반 심볼 충돌 해소 ────────
+    # 1차: 큰 타임프레임 우선 (1h > 15m > 5m) — 노이즈 적고 신뢰도 높음
+    # 2차: 동일 타임프레임 내 Score 내림차순
+    # 동일 심볼에 여러 전략 신호 → 가장 큰 TF의 최고 Score 1개만 선택
+    executable.sort(
+        key=lambda x: (
+            TF_PRIORITY.get(x["strategy"]["timeframe"], 0),
+            x["score"],
+        ),
+        reverse=True,
+    )
 
     seen_symbols: dict = {}
     deduplicated = []
@@ -229,20 +248,23 @@ def arbitrate(signals: list, balance: float, open_positions: dict) -> list:
         strategy_id = sig["strategy"]["id"]
         score       = sig["score"]
 
+        tf          = sig["strategy"]["timeframe"]
+        tf_pri      = TF_PRIORITY.get(tf, 0)
+
         if symbol in seen_symbols:
-            winner_id = seen_symbols[symbol]
+            winner_id, winner_tf = seen_symbols[symbol]
             logger.info(
-                f"[ARBITER] SKIP-SCORE-CONFLICT | {strategy_id} (Score {score:.2f}) — "
-                f"{symbol} 이미 {winner_id} 선택됨 (더 높은 Score)"
+                f"[ARBITER] SKIP-TF-CONFLICT | {strategy_id} ({tf}, Score {score:.2f}) — "
+                f"{symbol} 이미 {winner_id} ({winner_tf}) 선택됨 (큰 타임프레임 우선)"
             )
             continue
 
-        seen_symbols[symbol] = strategy_id
+        seen_symbols[symbol] = (strategy_id, tf)
         deduplicated.append(sig)
 
     if deduplicated:
         logger.info(
-            f"[ARBITER] 🏆 최종 실행 신호 {len(deduplicated)}개 (Score 충돌 해소 후):"
+            f"[ARBITER] 🏆 최종 실행 신호 {len(deduplicated)}개 (타임프레임 우선 충돌 해소 후):"
         )
         for i, s in enumerate(deduplicated):
             sid = s["strategy"]["id"]
