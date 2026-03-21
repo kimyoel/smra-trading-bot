@@ -48,7 +48,7 @@ core/order_manager.py — ccxt futures 주문 발행 (v3.1 — Hedge Mode 방향
 import math
 import ccxt
 from config import MIN_NOTIONAL
-from core.data_manager import exchange
+from core.data_manager import exchange, is_hedge_mode
 from utils.logger import get_logger
 
 logger = get_logger("order_manager")
@@ -397,6 +397,7 @@ def cancel_all_open_orders(symbol: str, pos_side: str = "") -> None:
 
     [v3.1] pos_side 지정 시 해당 방향의 주문만 취소.
            pos_side="" (기본): 전체 취소 (하위 호환).
+    [v3.2] One-way 모드 호환: is_hedge_mode() False이면 항상 전체 취소.
 
     Hedge Mode 핵심 변경:
         동일 심볼에 LONG + SHORT 양방향 포지션이 있을 수 있으므로,
@@ -404,6 +405,12 @@ def cancel_all_open_orders(symbol: str, pos_side: str = "") -> None:
         → pos_side 지정 시 Algo Order를 개별 조회 후 positionSide 매칭하여 취소.
     """
     raw = _to_raw_symbol(symbol)
+
+    # One-way 모드에서는 positionSide 필터링 불필요 → 항상 전체 취소
+    hedge = is_hedge_mode()
+    if not hedge:
+        pos_side = ""  # One-way에서는 방향 구분 없음
+
     position_side_filter = ""
     if pos_side:
         position_side_filter = "LONG" if pos_side.lower() == "long" else "SHORT"
@@ -473,10 +480,12 @@ def cancel_all_open_orders(symbol: str, pos_side: str = "") -> None:
 def close_position_market(symbol: str, size: float = 0.0, pos_side: str = "long") -> None:
     """
     시장가 강제 청산 (v3.0 Hedge Mode: positionSide 명시).
+    [v3.1] One-way 모드 호환: is_hedge_mode() False이면 positionSide 생략.
 
     [v3.0] 헤지 모드에서는 positionSide="LONG"/"SHORT" 지정 필수.
            동일 심볼에 양 방향 포지션이 있을 수 있으므로 정확한 방향만 청산.
     """
+    hedge = is_hedge_mode()
     position_side = "LONG" if pos_side == "long" else "SHORT"
 
     # Binance 실시간 포지션 크기 재조회 (v3.0: positionSide 매칭)
@@ -487,12 +496,24 @@ def close_position_market(symbol: str, size: float = 0.0, pos_side: str = "long"
             if contracts > 0:
                 pos_sym = pos["symbol"].split(":")[0]
                 binance_pos_side = (pos.get("side", "long") or "long").lower()
-                if pos_sym == symbol.split(":")[0] and binance_pos_side == pos_side:
-                    size = contracts
-                    logger.info(
-                        f"[ORDER] 강제청산 실시간 수량 확인: {symbol} [{position_side}] → {size}"
-                    )
-                    break
+                if hedge:
+                    # 헤지 모드: 방향 매칭
+                    if pos_sym == symbol.split(":")[0] and binance_pos_side == pos_side:
+                        size = contracts
+                        logger.info(
+                            f"[ORDER] 강제청산 실시간 수량 확인: {symbol} [{position_side}] → {size}"
+                        )
+                        break
+                else:
+                    # One-way 모드: 방향 무관하게 첫 번째 포지션
+                    if pos_sym == symbol.split(":")[0]:
+                        size = contracts
+                        # One-way에서 side는 포지션 방향 (long=매수포지션 → 매도로 청산)
+                        pos_side = binance_pos_side
+                        logger.info(
+                            f"[ORDER] 강제청산 실시간 수량 확인 (One-way): {symbol} → {size}"
+                        )
+                        break
     except Exception as e:
         logger.warning(
             f"[ORDER] 강제청산 실시간 조회 실패 — 파라미터 size({size}) 폴백: {e}"
@@ -505,14 +526,21 @@ def close_position_market(symbol: str, size: float = 0.0, pos_side: str = "long"
         return
 
     try:
+        params = {}
+        if hedge:
+            params["positionSide"] = position_side
+        else:
+            params["reduceOnly"] = True
+
         exchange.create_order(
             symbol=symbol,
             type="MARKET",
             side=close_side,
             amount=size,
-            params={"positionSide": position_side}
+            params=params,
         )
-        logger.info(f"[ORDER] {symbol} [{position_side}] 강제 청산 완료 (size={size}, side={close_side})")
+        mode_label = "Hedge" if hedge else "One-way"
+        logger.info(f"[ORDER] {symbol} [{position_side}] 강제 청산 완료 ({mode_label}, size={size}, side={close_side})")
     except Exception as e:
         logger.error(f"[ORDER] 강제 청산 실패 {symbol} [{position_side}]: {e}")
 

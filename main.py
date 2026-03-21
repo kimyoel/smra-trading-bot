@@ -1,11 +1,16 @@
 """
-main.py — SMRA Bot 메인 루프 (v6.3.2 — 에러 알림 중복 차단)
+main.py — SMRA Bot 메인 루프 (v6.3.3 — One-way 호환 + 자동 헤지 전환)
+
+v6.3.3:
+  [FIX] 헤지 모드 전환 실패 시 봇 종료하지 않고 One-way 호환 모드로 계속 동작
+    - 기존 포지션 관리 기능 유지 (max_hold_bars 강제청산, ATR TP/SL 갱신, 청산 감지)
+    - One-way 모드에서는 새 진입만 차단 (기존 포지션 보호)
+    - 매 루프에서 포지션 0개 감지 시 자동 헤지 모드 전환 시도
+    - 전환 성공 후 다음 루프부터 신규 진입 허용
 
 v6.3.2:
   [FIX] 에러 알림 중복 전송 방지 (파일 기반 dedup)
     → Railway 재시작 시 동일 에러 알림 반복 차단 (쿨다운 1시간)
-  [FIX] 헤지 모드 전환 실패 시 300초 대기 후 종료
-    → Railway always 재시작 + 알림 폭탄 방지
 
 v6.3.1 (Hedge Mode 로직 수정):
   [FIX] 강제청산 시 cancel_all_open_orders(symbol, pos_side=direction) 변경
@@ -58,7 +63,7 @@ from datetime import datetime, timezone
 
 from config import LOOP_INTERVAL_SEC
 from strategies.registry import STRATEGY_REGISTRY
-from core.data_manager import get_balance, clear_cache, ensure_hedge_mode
+from core.data_manager import get_balance, clear_cache, ensure_hedge_mode, try_switch_hedge_mode, is_hedge_mode
 from core.signal_generator import generate_all_signals
 from core.signal_arbiter import arbitrate
 from core.position_manager import (
@@ -139,6 +144,23 @@ def run_loop() -> None:
     pos_keys_list = list(open_positions.keys())
     logger.info(f"[LOOP] 보유 포지션: {pos_keys_list or '없음'}")
 
+    # ── 3-0. [v6.3.3] 헤지 모드 자동 전환 시도 ───────────────
+    # One-way 모드이고 포지션이 0개이면 전환 시도
+    if not is_hedge_mode():
+        if len(open_positions) == 0:
+            logger.info("[LOOP] 🔄 포지션 0개 감지 — 헤지 모드 전환 시도")
+            switched = try_switch_hedge_mode()
+            if switched:
+                logger.info("[LOOP] ✅ 헤지 모드 전환 성공! 다음 루프부터 신규 진입 허용")
+                notify_error("✅ 헤지 모드 전환 완료! 신규 진입 재개됩니다.")
+            else:
+                logger.info("[LOOP] ⏳ 헤지 모드 전환 실패 — 다음 루프 재시도")
+        else:
+            logger.info(
+                f"[LOOP] ⏳ One-way 모드 유지 — 포지션 {len(open_positions)}개 보유 중 "
+                f"(max_hold_bars 청산 대기)"
+            )
+
     # ── 3-1. [v6.3] 청산 감지 — pos_key 기반 비교 ────────────
     _force_closed_this_loop: set = set()
     for prev_key, prev_info in _prev_open_positions.items():
@@ -192,7 +214,17 @@ def run_loop() -> None:
 
     # ── 4-1. ATR 전략 TP/SL 매 봉 갱신 ──────────────────────
     open_positions_after_close = get_open_positions()
-    update_atr_tp_sl(open_positions_after_close)
+    if is_hedge_mode():
+        update_atr_tp_sl(open_positions_after_close)
+
+    # ── 4-2. [v6.3.3] One-way 모드 — 새 진입 차단 ────────────
+    if not is_hedge_mode():
+        logger.info(
+            "[LOOP] ⏳ One-way 호환 모드 — 기존 포지션 관리만 수행, "
+            "신호 생성/신규 진입 스킵"
+        )
+        _update_prev_snapshot(open_positions, _force_closed_this_loop)
+        return
 
     # ── 5. 신호 생성 ────────────────────────────────────────
     try:
@@ -344,20 +376,24 @@ def _update_prev_snapshot(
 
 
 def main() -> None:
-    logger.info("🚀 SMRA Bot v6.3 시작 (Hedge Mode)")
+    logger.info("🚀 SMRA Bot v6.3.3 시작 (Hedge Mode + One-way 호환)")
     logger.info(f"120개 전략 (BTC 40 + ETH 40 + XRP 40) | Hedge Mode | Score 순위 충돌 해소")
 
-    # [v6.3] 헤지 모드 전환 — 봇 시작 시 1회 실행
-    try:
-        ensure_hedge_mode()
-        logger.info("[MAIN] ✅ 헤지 모드 확인 완료")
-    except RuntimeError as e:
-        logger.error(f"[MAIN] ❌ 헤지 모드 전환 실패 — 봇 종료: {e}")
-        notify_error(f"헤지 모드 전환 실패: {e}")
-        # [v6.3.2] Railway always 재시작 시 알림 폭탄 방지: 300초 대기 후 종료
-        logger.info("[MAIN] ⏳ 300초 대기 후 종료 (Railway 재시작 대기)")
-        time.sleep(300)
-        return
+    # [v6.3.3] 헤지 모드 전환 시도 — 실패해도 봇 계속 동작
+    ensure_hedge_mode()
+    if is_hedge_mode():
+        logger.info("[MAIN] ✅ 헤지 모드 활성 — 전체 기능 정상 가동")
+    else:
+        logger.warning(
+            "[MAIN] ⚠️ One-way 호환 모드로 시작 — "
+            "기존 포지션 관리 계속, 새 진입 차단. "
+            "포지션 모두 청산되면 자동 헤지 전환 후 신규 진입 재개."
+        )
+        notify_error(
+            "⚠️ One-way 호환 모드 시작\n"
+            "기존 포지션 관리 계속 (강제청산, TP/SL 관리)\n"
+            "포지션 모두 청산 후 자동 헤지 전환 예정"
+        )
 
     while True:
         start = time.time()
