@@ -1,30 +1,18 @@
 """
-strategies/indicators.py — WFA 전략별 복합 진입 조건 함수 (v5.0)
+strategies/indicators.py — WFA 전략별 복합 진입 조건 함수 (v5.2)
+
+[v5.2] 5분봉 WFA 전략 진입 함수 10개 추가
+  - BTCUSDT_5m_WFA_Report.docx 기반
+  - 새 지표 헬퍼: RSI, Stochastic, CCI, VWAP(HLCC/4), AD, MFI
+  - LONG 5개 + SHORT 5개 (5분봉 전용)
 
 [v5.0] WFA OOS 보고서 기반 전면 교체
-  - 기존: 개별 지표 → "long"/"short"/False 반환 → AND 조합
-  - 변경: 전략별 복합 진입 함수 (entry_fn) → True/False 반환
-  - 각 함수는 보고서의 진입 조건을 정확히 구현
-  - 크로스(전환) 감지는 signal_generator에서 처리
+  - 15분봉 전략별 복합 진입 함수 (entry_fn) → True/False 반환
 
 지표 구현 목록:
-  - Williams %R (14)
-  - Bollinger Bands (20, 2)
-  - EMA Stack (5, 26, 50) — 정배열/역배열
-  - EMA Cross (12, 26)
-  - ADX (14)
-  - Aroon (25)
-  - Donchian Channel (20)
-  - Volume SMA (20) 필터
-  - MACD (12, 26, 9)
-  - Parabolic SAR
-  - MOM (10)
-  - OBV + OBV SMA (20)
-  - SMA (10, 20)
-  - Ichimoku (Tenkan/Kijun)
-  - STDDEV (20) 팽창 감지
-  - Keltner Channel (20, 2)
-  - ATR (14) + ATR SMA 필터
+  15m: Williams %R, BB, EMA Stack, ADX, Aroon, Donchian, Volume, MACD, PSAR, MOM,
+       OBV, SMA, Ichimoku, STDDEV, Keltner, ATR
+  5m:  + RSI, Stochastic(%K), CCI, VWAP(HLCC/4 SMA), AD(Accumulation/Distribution), MFI
 """
 
 import pandas as pd
@@ -593,19 +581,392 @@ def entry_short_bb_ema_stack_atr_inv(df: pd.DataFrame) -> bool:
 
 
 # ═══════════════════════════════════════════════════════════════
+# 5분봉 추가 헬퍼: RSI, Stochastic, CCI, VWAP, AD, MFI
+# ═══════════════════════════════════════════════════════════════
+
+def _rsi(df: pd.DataFrame, period: int = 14):
+    """RSI 계산, 최신값 반환"""
+    rsi = ta.rsi(df["close"], length=period)
+    if rsi is None or len(rsi) < period:
+        return None
+    val = float(rsi.iloc[-1])
+    if np.isnan(val):
+        return None
+    return val
+
+
+def _stoch_k(df: pd.DataFrame, period: int = 14):
+    """Stochastic %K 계산, (current, previous) 반환 — 상향 전환 감지용"""
+    stoch = ta.stoch(df["high"], df["low"], df["close"], k=period, d=3)
+    if stoch is None or stoch.empty:
+        return None, None
+    k_col = [c for c in stoch.columns if c.startswith("STOCHk_")]
+    if not k_col:
+        return None, None
+    k_series = stoch[k_col[0]]
+    if len(k_series) < 2:
+        return None, None
+    curr = float(k_series.iloc[-1])
+    prev = float(k_series.iloc[-2])
+    if np.isnan(curr) or np.isnan(prev):
+        return None, None
+    return curr, prev
+
+
+def _cci(df: pd.DataFrame, period: int = 20):
+    """CCI 계산, 최신값 반환"""
+    cci = ta.cci(df["high"], df["low"], df["close"], length=period)
+    if cci is None or len(cci) < period:
+        return None
+    val = float(cci.iloc[-1])
+    if np.isnan(val):
+        return None
+    return val
+
+
+def _vwap_sma(df: pd.DataFrame, period: int = 20):
+    """간이 VWAP: HLCC/4 가중평균 SMA 계산, 최신값 반환"""
+    hlcc4 = (df["high"] + df["low"] + df["close"] + df["close"]) / 4
+    vwap = ta.sma(hlcc4, length=period)
+    if vwap is None or len(vwap) < period:
+        return None
+    val = float(vwap.iloc[-1])
+    if np.isnan(val):
+        return None
+    return val
+
+
+def _ad(df: pd.DataFrame):
+    """Accumulation/Distribution, (ad_val, ad_sma_val) 반환"""
+    ad = ta.ad(df["high"], df["low"], df["close"], df["volume"])
+    if ad is None or len(ad) < 20:
+        return None, None
+    ad_sma = ta.sma(ad, length=20)
+    if ad_sma is None or len(ad_sma) < 20:
+        return None, None
+    ad_val = float(ad.iloc[-1])
+    sma_val = float(ad_sma.iloc[-1])
+    if np.isnan(ad_val) or np.isnan(sma_val):
+        return None, None
+    return ad_val, sma_val
+
+
+def _mfi(df: pd.DataFrame, period: int = 14):
+    """MFI (Money Flow Index), 최신값 반환"""
+    mfi = ta.mfi(df["high"], df["low"], df["close"], df["volume"], length=period)
+    if mfi is None or len(mfi) < period:
+        return None
+    val = float(mfi.iloc[-1])
+    if np.isnan(val):
+        return None
+    return val
+
+
+# ═══════════════════════════════════════════════════════════════
+# 5분봉 LONG 전략 진입 함수 (5개)
+# ═══════════════════════════════════════════════════════════════
+
+def entry_long_5m_bb_ema_stack_vol_inv(df: pd.DataFrame) -> bool:
+    """
+    5m LONG #1: 3_BB_EMA_STACK_VOL_INV (Score 14.28)
+    진입: Close<BB_lo(20,2) AND EMA5>EMA26>EMA50
+    필터: Vol≤SMA(20)*1.5
+    """
+    bb_lower, _, _ = _bb(df, 20, 2.0)
+    if bb_lower is None:
+        return False
+    close = float(df["close"].iloc[-1])
+    if close >= bb_lower:
+        return False
+
+    ema5  = _ema(df, 5)
+    ema26 = _ema(df, 26)
+    ema50 = _ema(df, 50)
+    if ema5 is None or ema26 is None or ema50 is None:
+        return False
+    if not (ema5 > ema26 > ema50):
+        return False
+
+    vol_sma = ta.sma(df["volume"], length=20)
+    if vol_sma is None or len(vol_sma) < 20:
+        return False
+    vol_sma_val = float(vol_sma.iloc[-1])
+    if np.isnan(vol_sma_val):
+        return False
+    current_vol = float(df["volume"].iloc[-1])
+    if current_vol > vol_sma_val * 1.5:
+        return False
+
+    return True
+
+
+def entry_long_5m_macd_ichimoku_stddev(df: pd.DataFrame) -> bool:
+    """
+    5m LONG #2: 3_MACD_ICHIMOKU_STDDEV (Score 12.54)
+    진입: MACD>Sig(12,26,9) AND Tenkan>Kijun AND STD↑ AND Close>SMA(20)
+    """
+    macd_val, signal_val, _ = _macd(df, 12, 26, 9)
+    if macd_val is None or signal_val is None:
+        return False
+    if macd_val <= signal_val:
+        return False
+
+    tenkan, kijun = _ichimoku(df)
+    if tenkan is None or kijun is None:
+        return False
+    if tenkan <= kijun:
+        return False
+
+    _, _, is_expanding = _stddev(df, 20)
+    if not is_expanding:
+        return False
+
+    close = float(df["close"].iloc[-1])
+    sma20 = _sma(df, "close", 20)
+    if sma20 is None:
+        return False
+    if close <= sma20:
+        return False
+
+    return True
+
+
+def entry_long_5m_stoch_cci_ema_stack(df: pd.DataFrame) -> bool:
+    """
+    5m LONG #3: 3_STOCH_CCI_EMA_STACK (Score 12.07)
+    진입: %K(14)<20 상향전환 AND CCI(20)<-100 AND EMA5>EMA26>EMA50
+    """
+    k_curr, k_prev = _stoch_k(df, 14)
+    if k_curr is None or k_prev is None:
+        return False
+    # %K < 20 이면서 이전봉보다 상승 (상향 전환)
+    if k_curr >= 20 or k_curr <= k_prev:
+        return False
+
+    cci_val = _cci(df, 20)
+    if cci_val is None or cci_val >= -100:
+        return False
+
+    ema5  = _ema(df, 5)
+    ema26 = _ema(df, 26)
+    ema50 = _ema(df, 50)
+    if ema5 is None or ema26 is None or ema50 is None:
+        return False
+    if not (ema5 > ema26 > ema50):
+        return False
+
+    return True
+
+
+def entry_long_5m_cci_vwap_ad(df: pd.DataFrame) -> bool:
+    """
+    5m LONG #4: 3_CCI_VWAP_AD (Score 11.17)
+    진입: CCI(20)<-100 AND Close>VWAP(20) AND AD>AD_SMA(20)
+    """
+    cci_val = _cci(df, 20)
+    if cci_val is None or cci_val >= -100:
+        return False
+
+    close = float(df["close"].iloc[-1])
+    vwap = _vwap_sma(df, 20)
+    if vwap is None:
+        return False
+    if close <= vwap:
+        return False
+
+    ad_val, ad_sma_val = _ad(df)
+    if ad_val is None or ad_sma_val is None:
+        return False
+    if ad_val <= ad_sma_val:
+        return False
+
+    return True
+
+
+def entry_long_5m_rsi_cci_ema_stack(df: pd.DataFrame) -> bool:
+    """
+    5m LONG #5: 3_RSI_CCI_EMA_STACK (Score 11.04)
+    진입: RSI(14)<30 AND CCI(20)<-100 AND EMA5>EMA26>EMA50
+    """
+    rsi_val = _rsi(df, 14)
+    if rsi_val is None or rsi_val >= 30:
+        return False
+
+    cci_val = _cci(df, 20)
+    if cci_val is None or cci_val >= -100:
+        return False
+
+    ema5  = _ema(df, 5)
+    ema26 = _ema(df, 26)
+    ema50 = _ema(df, 50)
+    if ema5 is None or ema26 is None or ema50 is None:
+        return False
+    if not (ema5 > ema26 > ema50):
+        return False
+
+    return True
+
+
+# ═══════════════════════════════════════════════════════════════
+# 5분봉 SHORT 전략 진입 함수 (5개)
+# ═══════════════════════════════════════════════════════════════
+
+def entry_short_5m_rsi_willr_ema_stack(df: pd.DataFrame) -> bool:
+    """
+    5m SHORT #1: 3_RSI_WILLR_EMA_STACK (Score 13.26)
+    진입: RSI(14)>70 AND WR(14)>-20 AND EMA5<EMA26<EMA50
+    """
+    rsi_val = _rsi(df, 14)
+    if rsi_val is None or rsi_val <= 70:
+        return False
+
+    wr = _willr(df, 14)
+    if wr is None or wr <= -20:
+        return False
+
+    ema5  = _ema(df, 5)
+    ema26 = _ema(df, 26)
+    ema50 = _ema(df, 50)
+    if ema5 is None or ema26 is None or ema50 is None:
+        return False
+    if not (ema5 < ema26 < ema50):
+        return False
+
+    return True
+
+
+def entry_short_5m_ema_ichimoku_volume(df: pd.DataFrame) -> bool:
+    """
+    5m SHORT #2: 3_EMA_ICHIMOKU_VOLUME (Score 12.41)
+    진입: EMA12<EMA26 AND Tenkan<Kijun
+    필터: Vol>SMA(20)*1.5
+    """
+    ema12 = _ema(df, 12)
+    ema26 = _ema(df, 26)
+    if ema12 is None or ema26 is None:
+        return False
+    if ema12 >= ema26:
+        return False
+
+    tenkan, kijun = _ichimoku(df)
+    if tenkan is None or kijun is None:
+        return False
+    if tenkan >= kijun:
+        return False
+
+    vol_sma = ta.sma(df["volume"], length=20)
+    if vol_sma is None or len(vol_sma) < 20:
+        return False
+    vol_sma_val = float(vol_sma.iloc[-1])
+    if np.isnan(vol_sma_val):
+        return False
+    current_vol = float(df["volume"].iloc[-1])
+    if current_vol <= vol_sma_val * 1.5:
+        return False
+
+    return True
+
+
+def entry_short_5m_rsi_ema_stack(df: pd.DataFrame) -> bool:
+    """
+    5m SHORT #3: 2_RSI_EMA_STACK (Score 12.05)
+    진입: RSI(14)>70 AND EMA5<EMA26<EMA50
+    """
+    rsi_val = _rsi(df, 14)
+    if rsi_val is None or rsi_val <= 70:
+        return False
+
+    ema5  = _ema(df, 5)
+    ema26 = _ema(df, 26)
+    ema50 = _ema(df, 50)
+    if ema5 is None or ema26 is None or ema50 is None:
+        return False
+    if not (ema5 < ema26 < ema50):
+        return False
+
+    return True
+
+
+def entry_short_5m_rsi_ema_stack_atr_inv(df: pd.DataFrame) -> bool:
+    """
+    5m SHORT #4: 3_RSI_EMA_STACK_ATR_INV (Score 12.05)
+    진입: RSI(14)>70 AND EMA5<EMA26<EMA50
+    필터: ATR(14)≤ATR_SMA
+    """
+    rsi_val = _rsi(df, 14)
+    if rsi_val is None or rsi_val <= 70:
+        return False
+
+    ema5  = _ema(df, 5)
+    ema26 = _ema(df, 26)
+    ema50 = _ema(df, 50)
+    if ema5 is None or ema26 is None or ema50 is None:
+        return False
+    if not (ema5 < ema26 < ema50):
+        return False
+
+    atr_val, atr_sma_val = _atr(df, 14)
+    if atr_val is None or atr_sma_val is None:
+        return False
+    if atr_val > atr_sma_val:
+        return False
+
+    return True
+
+
+def entry_short_5m_psar_mfi_stddev(df: pd.DataFrame) -> bool:
+    """
+    5m SHORT #5: 3_PSAR_MFI_STDDEV (Score 11.50)
+    진입: SAR↓(0.02,0.2) AND MFI(14)>80 AND STD↑ AND Close<SMA(20)
+    """
+    psar_dir = _psar(df)
+    if psar_dir != "short":
+        return False
+
+    mfi_val = _mfi(df, 14)
+    if mfi_val is None or mfi_val <= 80:
+        return False
+
+    _, _, is_expanding = _stddev(df, 20)
+    if not is_expanding:
+        return False
+
+    close = float(df["close"].iloc[-1])
+    sma20 = _sma(df, "close", 20)
+    if sma20 is None:
+        return False
+    if close >= sma20:
+        return False
+
+    return True
+
+
+# ═══════════════════════════════════════════════════════════════
 # entry_fn 이름 → 함수 매핑
 # ═══════════════════════════════════════════════════════════════
 ENTRY_FN_MAP = {
-    # LONG 전략
+    # 15m LONG 전략
     "entry_long_willr_bb_ema_stack":     entry_long_willr_bb_ema_stack,
     "entry_long_adx_willr_ema_stack":    entry_long_adx_willr_ema_stack,
     "entry_long_aroon_donchian_vol_inv": entry_long_aroon_donchian_vol_inv,
     "entry_long_ema_macd_psar":          entry_long_ema_macd_psar,
     "entry_long_ema_psar_mom":           entry_long_ema_psar_mom,
-    # SHORT 전략
+    # 15m SHORT 전략
     "entry_short_willr_bb_obv":          entry_short_willr_bb_obv,
     "entry_short_sma_ichimoku_stddev":   entry_short_sma_ichimoku_stddev,
     "entry_short_obv_keltner_adx_inv":   entry_short_obv_keltner_adx_inv,
     "entry_short_bb_ema_stack":          entry_short_bb_ema_stack,
     "entry_short_bb_ema_stack_atr_inv":  entry_short_bb_ema_stack_atr_inv,
+    # 5m LONG 전략
+    "entry_long_5m_bb_ema_stack_vol_inv":    entry_long_5m_bb_ema_stack_vol_inv,
+    "entry_long_5m_macd_ichimoku_stddev":    entry_long_5m_macd_ichimoku_stddev,
+    "entry_long_5m_stoch_cci_ema_stack":     entry_long_5m_stoch_cci_ema_stack,
+    "entry_long_5m_cci_vwap_ad":             entry_long_5m_cci_vwap_ad,
+    "entry_long_5m_rsi_cci_ema_stack":       entry_long_5m_rsi_cci_ema_stack,
+    # 5m SHORT 전략
+    "entry_short_5m_rsi_willr_ema_stack":    entry_short_5m_rsi_willr_ema_stack,
+    "entry_short_5m_ema_ichimoku_volume":    entry_short_5m_ema_ichimoku_volume,
+    "entry_short_5m_rsi_ema_stack":          entry_short_5m_rsi_ema_stack,
+    "entry_short_5m_rsi_ema_stack_atr_inv":  entry_short_5m_rsi_ema_stack_atr_inv,
+    "entry_short_5m_psar_mfi_stddev":        entry_short_5m_psar_mfi_stddev,
 }
