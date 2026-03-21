@@ -1,5 +1,11 @@
 """
-core/data_manager.py — ccxt OHLCV fetch + 캐시 (v2.5)
+core/data_manager.py — ccxt OHLCV fetch + 캐시 (v2.6)
+
+v2.6 추가:
+  - ensure_hedge_mode(): Binance 헤지 모드(dualSidePosition=true) 전환
+    → 봇 시작 시 1회 호출, 포지션 0개 확인 후 전환
+    → 이미 헤지 모드이면 스킵 (idempotent)
+    → 포지션 보유 중이면 전환 불가 → 안전하게 예외 raise
 
 v2.5 추가:
   - ccxt timeout=5000ms 추가 (무한대기 방지)
@@ -36,6 +42,53 @@ exchange = ccxt.binanceusdm({
         "fetchMarkets": ["linear"],   # futures 마켓만 로드
     },
 })
+
+# ── [v2.6] 헤지 모드 전환 ──────────────────────────────────────
+def ensure_hedge_mode() -> None:
+    """
+    [v2.6] Binance 선물 계정을 헤지 모드(Hedge Mode)로 전환.
+
+    헤지 모드: 동일 심볼에 LONG / SHORT 포지션 독립 보유 가능
+    → positionSide="LONG" / "SHORT" 파라미터 필수
+
+    안전 절차:
+      1. 현재 모드 조회 (GET /fapi/v1/positionSide/dual)
+      2. 이미 헤지 모드이면 스킵
+      3. 열린 포지션이 있으면 전환 불가 → RuntimeError
+      4. One-way → Hedge 전환 (POST /fapi/v1/positionSide/dual)
+
+    봇 시작 시 main.py에서 1회 호출.
+    """
+    try:
+        # 1. 현재 모드 조회
+        resp = exchange.fapiPrivateGetPositionSideDual()
+        is_hedge = resp.get("dualSidePosition", False)
+
+        if is_hedge:
+            logger.info("[DATA] ✅ 이미 헤지 모드 (dualSidePosition=true)")
+            return
+
+        # 2. 열린 포지션 확인 — 포지션 보유 중이면 전환 불가
+        positions = exchange.fetch_positions()
+        open_count = sum(
+            1 for p in positions
+            if float(p.get("contracts", 0) or 0) > 0
+        )
+        if open_count > 0:
+            raise RuntimeError(
+                f"[DATA] ❌ 헤지 모드 전환 실패: 열린 포지션 {open_count}개 존재. "
+                "모든 포지션 청산 후 재시작 필요."
+            )
+
+        # 3. One-way → Hedge 전환
+        exchange.fapiPrivatePostPositionSideDual({"dualSidePosition": "true"})
+        logger.info("[DATA] ✅ 헤지 모드 전환 완료 (One-way → Hedge)")
+
+    except RuntimeError:
+        raise  # 포지션 보유 에러는 그대로 전파
+    except Exception as e:
+        raise RuntimeError(f"[DATA] ❌ 헤지 모드 전환 실패: {e}") from e
+
 
 # ── 1루프 캐시 ───────────────────────────────────────────────
 _cache: dict = {}

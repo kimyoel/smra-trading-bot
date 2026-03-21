@@ -35,10 +35,12 @@ def send_telegram(message: str) -> bool:
 
 def notify_entry(strategy_id: str, symbol: str, side: str,
                  entry: float, tp: float, sl: float,
-                 leverage: int, margin: float) -> None:
+                 leverage: int, margin: float,
+                 timeframe: str = "") -> None:
+    tf_label = f" ({timeframe})" if timeframe else ""
     msg = (
         f"✅ <b>진입</b>\n"
-        f"전략: {strategy_id}\n"
+        f"전략: {strategy_id}{tf_label}\n"
         f"심볼: {symbol} {side}\n"
         f"진입가: {entry:.4f}\n"
         f"TP: {tp:.4f} | SL: {sl:.4f}\n"
@@ -48,11 +50,13 @@ def notify_entry(strategy_id: str, symbol: str, side: str,
 
 
 def notify_close(strategy_id: str, symbol: str,
-                 result: str, pnl: float) -> None:
+                 result: str, pnl: float,
+                 timeframe: str = "") -> None:
     icon = "🟢" if pnl >= 0 else "🔴"
+    tf_label = f" ({timeframe})" if timeframe else ""
     msg = (
         f"{icon} <b>청산</b>\n"
-        f"전략: {strategy_id}\n"
+        f"전략: {strategy_id}{tf_label}\n"
         f"심볼: {symbol}\n"
         f"결과: {result}\n"
         f"PnL: {pnl:+.2f} USDT"
