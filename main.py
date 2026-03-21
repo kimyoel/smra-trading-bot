@@ -1,5 +1,11 @@
 """
-main.py — SMRA Bot 메인 루프 (v6.3.1 — Hedge Mode 버그 수정)
+main.py — SMRA Bot 메인 루프 (v6.3.2 — 에러 알림 중복 차단)
+
+v6.3.2:
+  [FIX] 에러 알림 중복 전송 방지 (파일 기반 dedup)
+    → Railway 재시작 시 동일 에러 알림 반복 차단 (쿨다운 1시간)
+  [FIX] 헤지 모드 전환 실패 시 300초 대기 후 종료
+    → Railway always 재시작 + 알림 폭탄 방지
 
 v6.3.1 (Hedge Mode 로직 수정):
   [FIX] 강제청산 시 cancel_all_open_orders(symbol, pos_side=direction) 변경
@@ -348,6 +354,9 @@ def main() -> None:
     except RuntimeError as e:
         logger.error(f"[MAIN] ❌ 헤지 모드 전환 실패 — 봇 종료: {e}")
         notify_error(f"헤지 모드 전환 실패: {e}")
+        # [v6.3.2] Railway always 재시작 시 알림 폭탄 방지: 300초 대기 후 종료
+        logger.info("[MAIN] ⏳ 300초 대기 후 종료 (Railway 재시작 대기)")
+        time.sleep(300)
         return
 
     while True:
