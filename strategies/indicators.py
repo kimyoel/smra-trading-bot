@@ -1,5 +1,10 @@
 """
-strategies/indicators.py — WFA 전략별 복합 진입 조건 함수 (v5.2)
+strategies/indicators.py — WFA 전략별 복합 진입 조건 함수 (v5.3)
+
+[v5.3] 1시간봉 WFA 전략 진입 함수 10개 추가
+  - BTCUSDT_1h_WFA_Report.docx 기반
+  - 새 지표 헬퍼: ROC (Rate of Change)
+  - LONG 5개 + SHORT 5개 (1시간봉 전용)
 
 [v5.2] 5분봉 WFA 전략 진입 함수 10개 추가
   - BTCUSDT_5m_WFA_Report.docx 기반
@@ -13,6 +18,7 @@ strategies/indicators.py — WFA 전략별 복합 진입 조건 함수 (v5.2)
   15m: Williams %R, BB, EMA Stack, ADX, Aroon, Donchian, Volume, MACD, PSAR, MOM,
        OBV, SMA, Ichimoku, STDDEV, Keltner, ATR
   5m:  + RSI, Stochastic(%K), CCI, VWAP(HLCC/4 SMA), AD(Accumulation/Distribution), MFI
+  1h:  + ROC (Rate of Change)
 """
 
 import pandas as pd
@@ -942,6 +948,282 @@ def entry_short_5m_psar_mfi_stddev(df: pd.DataFrame) -> bool:
 
 
 # ═══════════════════════════════════════════════════════════════
+# 1시간봉 추가 헬퍼: ROC
+# ═══════════════════════════════════════════════════════════════
+
+def _roc(df: pd.DataFrame, period: int = 10):
+    """Rate of Change 계산, 최신값 반환 (%)"""
+    roc = ta.roc(df["close"], length=period)
+    if roc is None or len(roc) < period:
+        return None
+    val = float(roc.iloc[-1])
+    if np.isnan(val):
+        return None
+    return val
+
+
+# ═══════════════════════════════════════════════════════════════
+# 1시간봉 LONG 전략 진입 함수 (5개)
+# ═══════════════════════════════════════════════════════════════
+
+def entry_long_1h_sma_stddev_ema_stack(df: pd.DataFrame) -> bool:
+    """
+    1h LONG #1: 3_SMA_STDDEV_EMA_STACK (Score 22.99)
+    진입: SMA10>SMA20 AND STD↑&Close>SMA(20) AND EMA5>EMA26>EMA50
+    """
+    sma10 = _sma(df, "close", 10)
+    sma20 = _sma(df, "close", 20)
+    if sma10 is None or sma20 is None:
+        return False
+    if sma10 <= sma20:
+        return False
+
+    _, _, is_expanding = _stddev(df, 20)
+    if not is_expanding:
+        return False
+
+    close = float(df["close"].iloc[-1])
+    if close <= sma20:
+        return False
+
+    ema5  = _ema(df, 5)
+    ema26 = _ema(df, 26)
+    ema50 = _ema(df, 50)
+    if ema5 is None or ema26 is None or ema50 is None:
+        return False
+    if not (ema5 > ema26 > ema50):
+        return False
+
+    return True
+
+
+def entry_long_1h_ema_stddev_adx_inv(df: pd.DataFrame) -> bool:
+    """
+    1h LONG #2: 3_EMA_STDDEV_ADX_INV (Score 22.40)
+    진입: EMA12>EMA26 AND STD↑&Close>SMA(20)
+    필터: ADX(14)≤25
+    """
+    ema12 = _ema(df, 12)
+    ema26 = _ema(df, 26)
+    if ema12 is None or ema26 is None:
+        return False
+    if ema12 <= ema26:
+        return False
+
+    _, _, is_expanding = _stddev(df, 20)
+    if not is_expanding:
+        return False
+
+    close = float(df["close"].iloc[-1])
+    sma20 = _sma(df, "close", 20)
+    if sma20 is None:
+        return False
+    if close <= sma20:
+        return False
+
+    adx = _adx_value(df, 14)
+    if adx is None or adx > 25:
+        return False
+
+    return True
+
+
+def entry_long_1h_psar_aroon_mom(df: pd.DataFrame) -> bool:
+    """
+    1h LONG #3: 3_PSAR_AROON_MOM (Score 22.25)
+    진입: SAR↑(0.02,0.2) AND AroonUp(25)>70 AND MOM(10)>0
+    """
+    psar_dir = _psar(df)
+    if psar_dir != "long":
+        return False
+
+    aroon_up, _ = _aroon(df, 25)
+    if aroon_up is None or aroon_up <= 70:
+        return False
+
+    mom_val = _mom(df, 10)
+    if mom_val is None or mom_val <= 0:
+        return False
+
+    return True
+
+
+def entry_long_1h_psar_aroon_vwap(df: pd.DataFrame) -> bool:
+    """
+    1h LONG #4: 3_PSAR_AROON_VWAP (Score 22.25)
+    진입: SAR↑(0.02,0.2) AND AroonUp(25)>70 AND Close>VWAP(20)
+    """
+    psar_dir = _psar(df)
+    if psar_dir != "long":
+        return False
+
+    aroon_up, _ = _aroon(df, 25)
+    if aroon_up is None or aroon_up <= 70:
+        return False
+
+    close = float(df["close"].iloc[-1])
+    vwap = _vwap_sma(df, 20)
+    if vwap is None:
+        return False
+    if close <= vwap:
+        return False
+
+    return True
+
+
+def entry_long_1h_psar_aroon_roc(df: pd.DataFrame) -> bool:
+    """
+    1h LONG #5: 3_PSAR_AROON_ROC (Score 22.25)
+    진입: SAR↑(0.02,0.2) AND AroonUp(25)>70 AND ROC(10)>0%
+    """
+    psar_dir = _psar(df)
+    if psar_dir != "long":
+        return False
+
+    aroon_up, _ = _aroon(df, 25)
+    if aroon_up is None or aroon_up <= 70:
+        return False
+
+    roc_val = _roc(df, 10)
+    if roc_val is None or roc_val <= 0:
+        return False
+
+    return True
+
+
+# ═══════════════════════════════════════════════════════════════
+# 1시간봉 SHORT 전략 진입 함수 (5개)
+# ═══════════════════════════════════════════════════════════════
+
+def entry_short_1h_adx_rsi_willr(df: pd.DataFrame) -> bool:
+    """
+    1h SHORT #1: 3_ADX_RSI_WILLR (Score 23.27)
+    진입: RSI(14)>70 AND WR(14)>-20
+    필터: ADX(14)>25
+    """
+    rsi_val = _rsi(df, 14)
+    if rsi_val is None or rsi_val <= 70:
+        return False
+
+    wr = _willr(df, 14)
+    if wr is None or wr <= -20:
+        return False
+
+    adx = _adx_value(df, 14)
+    if adx is None or adx <= 25:
+        return False
+
+    return True
+
+
+def entry_short_1h_adx_rsi_vol_inv(df: pd.DataFrame) -> bool:
+    """
+    1h SHORT #2: 3_ADX_RSI_VOL_INV (Score 22.44)
+    진입: RSI(14)>70
+    필터: ADX(14)>25 AND Vol≤SMA(20)*1.5
+    """
+    rsi_val = _rsi(df, 14)
+    if rsi_val is None or rsi_val <= 70:
+        return False
+
+    adx = _adx_value(df, 14)
+    if adx is None or adx <= 25:
+        return False
+
+    vol_sma = ta.sma(df["volume"], length=20)
+    if vol_sma is None or len(vol_sma) < 20:
+        return False
+    vol_sma_val = float(vol_sma.iloc[-1])
+    if np.isnan(vol_sma_val):
+        return False
+    current_vol = float(df["volume"].iloc[-1])
+    if current_vol > vol_sma_val * 1.5:
+        return False
+
+    return True
+
+
+def entry_short_1h_macd_stddev_vol_inv(df: pd.DataFrame) -> bool:
+    """
+    1h SHORT #3: 3_MACD_STDDEV_VOL_INV (Score 22.18)
+    진입: MACD<Sig(12,26,9) AND STD↑&Close<SMA(20)
+    필터: Vol≤SMA(20)*1.5
+    """
+    macd_val, signal_val, _ = _macd(df, 12, 26, 9)
+    if macd_val is None or signal_val is None:
+        return False
+    if macd_val >= signal_val:
+        return False
+
+    _, _, is_expanding = _stddev(df, 20)
+    if not is_expanding:
+        return False
+
+    close = float(df["close"].iloc[-1])
+    sma20 = _sma(df, "close", 20)
+    if sma20 is None:
+        return False
+    if close >= sma20:
+        return False
+
+    vol_sma = ta.sma(df["volume"], length=20)
+    if vol_sma is None or len(vol_sma) < 20:
+        return False
+    vol_sma_val = float(vol_sma.iloc[-1])
+    if np.isnan(vol_sma_val):
+        return False
+    current_vol = float(df["volume"].iloc[-1])
+    if current_vol > vol_sma_val * 1.5:
+        return False
+
+    return True
+
+
+def entry_short_1h_bb_mfi_adx_inv(df: pd.DataFrame) -> bool:
+    """
+    1h SHORT #4: 3_BB_MFI_ADX_INV (Score 22.11)
+    진입: Close>BB_hi(20,2) AND MFI(14)>80
+    필터: ADX(14)≤25
+    """
+    _, _, bb_upper = _bb(df, 20, 2.0)
+    if bb_upper is None:
+        return False
+    close = float(df["close"].iloc[-1])
+    if close <= bb_upper:
+        return False
+
+    mfi_val = _mfi(df, 14)
+    if mfi_val is None or mfi_val <= 80:
+        return False
+
+    adx = _adx_value(df, 14)
+    if adx is None or adx > 25:
+        return False
+
+    return True
+
+
+def entry_short_1h_cci_ema_stack(df: pd.DataFrame) -> bool:
+    """
+    1h SHORT #5: 2_CCI_EMA_STACK (Score 20.80)
+    진입: CCI(20)>+100 AND EMA5<EMA26<EMA50
+    """
+    cci_val = _cci(df, 20)
+    if cci_val is None or cci_val <= 100:
+        return False
+
+    ema5  = _ema(df, 5)
+    ema26 = _ema(df, 26)
+    ema50 = _ema(df, 50)
+    if ema5 is None or ema26 is None or ema50 is None:
+        return False
+    if not (ema5 < ema26 < ema50):
+        return False
+
+    return True
+
+
+# ═══════════════════════════════════════════════════════════════
 # entry_fn 이름 → 함수 매핑
 # ═══════════════════════════════════════════════════════════════
 ENTRY_FN_MAP = {
@@ -969,4 +1251,16 @@ ENTRY_FN_MAP = {
     "entry_short_5m_rsi_ema_stack":          entry_short_5m_rsi_ema_stack,
     "entry_short_5m_rsi_ema_stack_atr_inv":  entry_short_5m_rsi_ema_stack_atr_inv,
     "entry_short_5m_psar_mfi_stddev":        entry_short_5m_psar_mfi_stddev,
+    # 1h LONG 전략
+    "entry_long_1h_sma_stddev_ema_stack":    entry_long_1h_sma_stddev_ema_stack,
+    "entry_long_1h_ema_stddev_adx_inv":      entry_long_1h_ema_stddev_adx_inv,
+    "entry_long_1h_psar_aroon_mom":          entry_long_1h_psar_aroon_mom,
+    "entry_long_1h_psar_aroon_vwap":         entry_long_1h_psar_aroon_vwap,
+    "entry_long_1h_psar_aroon_roc":          entry_long_1h_psar_aroon_roc,
+    # 1h SHORT 전략
+    "entry_short_1h_adx_rsi_willr":          entry_short_1h_adx_rsi_willr,
+    "entry_short_1h_adx_rsi_vol_inv":        entry_short_1h_adx_rsi_vol_inv,
+    "entry_short_1h_macd_stddev_vol_inv":    entry_short_1h_macd_stddev_vol_inv,
+    "entry_short_1h_bb_mfi_adx_inv":         entry_short_1h_bb_mfi_adx_inv,
+    "entry_short_1h_cci_ema_stack":          entry_short_1h_cci_ema_stack,
 }
