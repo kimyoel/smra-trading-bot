@@ -1,5 +1,13 @@
 """
-strategies/registry.py — WFA OOS 백테스트 검증 전략 레지스트리 (v5.0)
+strategies/registry.py — WFA OOS 백테스트 검증 전략 레지스트리 (v5.1)
+
+[v5.1] 레버리지 설정 — WFA 보고서 레버리지 섹션 반영
+  - 공식: recommended = floor(0.80 / (SL% + 0.4%))
+         theoretical_max = floor(1.00 / (SL% + 0.4%))
+  - leverage: 보고서 recommended 값 적용
+  - max_leverage: 보고서 theoretical_max 값 적용
+  - 안전 가이드라인: 이론적 최대의 80% 이하, 시작 시 recommended의 ~50%
+  - main.py에서 펀딩비 높으면 leverage // 2 자동 감소 (기존 로직 유지)
 
 [v5.0] BTCUSDT_15m_WFA_Report.docx 기반 전면 교체
   - 기존 17개 다심볼 전략 → BTCUSDT 15m 전용 10개 전략
@@ -14,13 +22,19 @@ strategies/registry.py — WFA OOS 백테스트 검증 전략 레지스트리 (v
   - 기존 indicators 리스트 + AND 조건 → entry_fn 단일 함수로 교체
     (보고서의 복합 조건을 정확히 구현하기 위해)
   - score 필드: 충돌 시 우선순위 (높을수록 우선)
-  - leverage: WFA 보고서에 레버리지 정보 없음 → 보수적 3x 기본값
+  - leverage: 보고서 recommended (v5.1), max_leverage: theoretical_max
   - max_hold_bars: 보고서 max_hold 컬럼 기반
 
 TP/SL 타입:
   tp_type: "fixed" (고정 %)
   tp_mult: TP 비율 (소수, 예: 0.10 = 10%)
   sl_mult: SL 비율 (소수, 예: 0.025 = 2.5%)
+
+레버리지 공식 (Binance USDT-M Cross Margin):
+  recommended_leverage = floor(0.80 / (SL% + 0.4%))
+  theoretical_max_leverage = floor(1.00 / (SL% + 0.4%))
+  * 0.4% = 슬리피지(~0.05-0.1%) + 펀딩비(~0.01-0.03%) + 안전마진
+  * 실운용 시 recommended의 ~50% 수준에서 시작 권장
 """
 
 STRATEGY_REGISTRY = {
@@ -42,8 +56,8 @@ STRATEGY_REGISTRY = {
         "survived_windows": 7,
         "avg_calmar":     3.649,
         "min_calmar":     1.223,
-        "leverage":       3,
-        "max_leverage":   5,
+        "leverage":       27,       # recommended: floor(0.80/(0.025+0.004))=27
+        "max_leverage":   34,       # theoretical: floor(1.00/(0.025+0.004))=34
         "tp_type":        "fixed",
         "tp_mult":        0.10,      # TP 10.0%
         "sl_mult":        0.025,     # SL 2.5%
@@ -64,8 +78,8 @@ STRATEGY_REGISTRY = {
         "survived_windows": 5,
         "avg_calmar":     2.953,
         "min_calmar":     2.451,
-        "leverage":       3,
-        "max_leverage":   5,
+        "leverage":       14,       # recommended: floor(0.80/(0.05+0.004))=14
+        "max_leverage":   18,       # theoretical: floor(1.00/(0.05+0.004))=18
         "tp_type":        "fixed",
         "tp_mult":        0.06,      # TP 6.0%
         "sl_mult":        0.05,      # SL 5.0%
@@ -86,8 +100,8 @@ STRATEGY_REGISTRY = {
         "survived_windows": 5,
         "avg_calmar":     2.044,
         "min_calmar":     1.619,
-        "leverage":       3,
-        "max_leverage":   5,
+        "leverage":       12,       # recommended: floor(0.80/(0.06+0.004))=12
+        "max_leverage":   15,       # theoretical: floor(1.00/(0.06+0.004))=15
         "tp_type":        "fixed",
         "tp_mult":        0.12,      # TP 12.0%
         "sl_mult":        0.06,      # SL 6.0%
@@ -108,8 +122,8 @@ STRATEGY_REGISTRY = {
         "survived_windows": 6,
         "avg_calmar":     4.042,
         "min_calmar":     0.675,
-        "leverage":       3,
-        "max_leverage":   5,
+        "leverage":       33,       # recommended: floor(0.80/(0.02+0.004))=33
+        "max_leverage":   41,       # theoretical: floor(1.00/(0.02+0.004))=41
         "tp_type":        "fixed",
         "tp_mult":        0.06,      # TP 6.0%
         "sl_mult":        0.02,      # SL 2.0%
@@ -130,8 +144,8 @@ STRATEGY_REGISTRY = {
         "survived_windows": 5,
         "avg_calmar":     2.050,
         "min_calmar":     1.472,
-        "leverage":       3,
-        "max_leverage":   5,
+        "leverage":       88,       # recommended: floor(0.80/(0.005+0.004))=88
+        "max_leverage":   111,      # theoretical: floor(1.00/(0.005+0.004))=111
         "tp_type":        "fixed",
         "tp_mult":        0.12,      # TP 12.0%
         "sl_mult":        0.005,     # SL 0.5%
@@ -156,8 +170,8 @@ STRATEGY_REGISTRY = {
         "survived_windows": 7,
         "avg_calmar":     8.013,
         "min_calmar":     1.387,
-        "leverage":       3,
-        "max_leverage":   5,
+        "leverage":       27,       # recommended: floor(0.80/(0.025+0.004))=27
+        "max_leverage":   34,       # theoretical: floor(1.00/(0.025+0.004))=34
         "tp_type":        "fixed",
         "tp_mult":        0.03,      # TP 3.0%
         "sl_mult":        0.025,     # SL 2.5%
@@ -178,8 +192,8 @@ STRATEGY_REGISTRY = {
         "survived_windows": 6,
         "avg_calmar":     41.302,
         "min_calmar":     1.204,
-        "leverage":       3,
-        "max_leverage":   5,
+        "leverage":       18,       # recommended: floor(0.80/(0.04+0.004))=18
+        "max_leverage":   22,       # theoretical: floor(1.00/(0.04+0.004))=22
         "tp_type":        "fixed",
         "tp_mult":        0.05,      # TP 5.0%
         "sl_mult":        0.04,      # SL 4.0%
@@ -200,8 +214,8 @@ STRATEGY_REGISTRY = {
         "survived_windows": 5,
         "avg_calmar":     20.451,
         "min_calmar":     1.971,
-        "leverage":       3,
-        "max_leverage":   5,
+        "leverage":       18,       # recommended: floor(0.80/(0.04+0.004))=18
+        "max_leverage":   22,       # theoretical: floor(1.00/(0.04+0.004))=22
         "tp_type":        "fixed",
         "tp_mult":        0.08,      # TP 8.0%
         "sl_mult":        0.04,      # SL 4.0%
@@ -222,8 +236,8 @@ STRATEGY_REGISTRY = {
         "survived_windows": 7,
         "avg_calmar":     3.799,
         "min_calmar":     1.055,
-        "leverage":       3,
-        "max_leverage":   5,
+        "leverage":       23,       # recommended: floor(0.80/(0.03+0.004))=23
+        "max_leverage":   29,       # theoretical: floor(1.00/(0.03+0.004))=29
         "tp_type":        "fixed",
         "tp_mult":        0.08,      # TP 8.0%
         "sl_mult":        0.03,      # SL 3.0%
@@ -244,8 +258,8 @@ STRATEGY_REGISTRY = {
         "survived_windows": 7,
         "avg_calmar":     3.799,
         "min_calmar":     1.055,
-        "leverage":       3,
-        "max_leverage":   5,
+        "leverage":       23,       # recommended: floor(0.80/(0.03+0.004))=23
+        "max_leverage":   29,       # theoretical: floor(1.00/(0.03+0.004))=29
         "tp_type":        "fixed",
         "tp_mult":        0.08,      # TP 8.0%
         "sl_mult":        0.03,      # SL 3.0%

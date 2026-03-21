@@ -1,5 +1,5 @@
 """
-core/order_manager.py — ccxt futures 주문 발행 (v2.16)
+core/order_manager.py — ccxt futures 주문 발행 (v2.17)
 
 버그 수정 히스토리:
   v2.13 : ccxt 4.5.43 + triggerPrice → /fapi/v1/algoOrder 자동 라우팅 (-4120 해결)
@@ -28,6 +28,11 @@ core/order_manager.py — ccxt futures 주문 발행 (v2.16)
            position_manager의 side 정보로 올바른 청산 방향 결정
          현재 모든 전략은 direction 미설정 → "long" 기본값 → 기존 동작 유지
          숏 전략 추가 시 registry에 "direction": "short" 추가하면 자동 작동
+  v2.17 :
+  [FIX6] _check_sl_above_liquidation SHORT 방향 지원 추가
+         - LONG: liq ≈ entry × (1 - 1/lev + MMR), SL < liq → 위험
+         - SHORT: liq ≈ entry × (1 + 1/lev - MMR), SL > liq → 위험
+         - execute_order에서 LONG/SHORT 모두 강제청산 가격 검증
 """
 
 import math
@@ -102,38 +107,50 @@ def _check_sl_above_liquidation(
     entry: float,
     sl: float,
     leverage: int,
+    direction: str = "long",
 ) -> None:
     """
-    [v2.14] SL이 강제청산 가격보다 위에 있는지 검증.
+    [v2.14 / v5.1] SL이 강제청산 가격보다 안전한지 검증.
 
     LONG 강제청산(Liquidation) 근사 가격:
         liq ≈ entry × (1 - 1/leverage + MMR)
+        SL < liq 이면 위험 (강제청산 먼저 발동)
 
-    SL < liq 이면: 가격이 SL에 도달하기 전에 강제청산됨 → 위험!
-    이 경우 경고 로그 출력 (주문 자체는 막지 않음, 전략 파라미터 문제이므로)
+    SHORT 강제청산 근사 가격:
+        liq ≈ entry × (1 + 1/leverage - MMR)
+        SL > liq 이면 위험 (강제청산 먼저 발동)
 
     레버리지와 TP/SL의 관계 정리:
         - TP/SL 가격은 항상 진입가 기준 '가격 이동 %'로 설정 (레버리지 무관)
         - 레버리지는 손익 배율(자본금 대비 수익률)에만 영향
         - 예: 10x 레버리지 + SL -0.5% → 자본금 -5% 손실 (적절한 리스크)
-        - 단, SL이 강제청산 가격보다 낮으면 SL이 발동 안 됨 → 이 함수로 체크
+        - 단, SL이 강제청산 가격보다 유리하지 않으면 SL이 발동 안 됨 → 이 함수로 체크
     """
-    mmr     = BINANCE_MMR.get(symbol, 0.005)
-    liq_est = entry * (1 - 1 / leverage + mmr)
+    mmr = BINANCE_MMR.get(symbol, 0.005)
 
-    sl_pct  = (sl - entry) / entry * 100   # 음수
-    liq_pct = (liq_est - entry) / entry * 100   # 음수
+    if direction == "long":
+        liq_est = entry * (1 - 1 / leverage + mmr)
+        sl_pct  = (sl - entry) / entry * 100   # 음수
+        liq_pct = (liq_est - entry) / entry * 100   # 음수
+        is_danger = sl < liq_est
+    else:  # short
+        liq_est = entry * (1 + 1 / leverage - mmr)
+        sl_pct  = (sl - entry) / entry * 100   # 양수
+        liq_pct = (liq_est - entry) / entry * 100   # 양수
+        is_danger = sl > liq_est
 
-    if sl < liq_est:
+    dir_label = direction.upper()
+
+    if is_danger:
         logger.warning(
-            f"[ORDER] ⚠️ SL 강제청산 우선 위험! {symbol} | "
-            f"SL={sl:.4f} ({sl_pct:.2f}%) < LiqEst={liq_est:.4f} ({liq_pct:.2f}%) | "
+            f"[ORDER] ⚠️ SL 강제청산 우선 위험! {symbol} [{dir_label}] | "
+            f"SL={sl:.4f} ({sl_pct:.2f}%) vs LiqEst={liq_est:.4f} ({liq_pct:.2f}%) | "
             f"레버리지={leverage}x → SL 발동 전 강제청산될 수 있음"
         )
     else:
         logger.info(
-            f"[ORDER] ✅ SL/Liq 안전 확인: {symbol} | "
-            f"SL={sl:.4f} ({sl_pct:.2f}%) > LiqEst={liq_est:.4f} ({liq_pct:.2f}%) | "
+            f"[ORDER] ✅ SL/Liq 안전 확인: {symbol} [{dir_label}] | "
+            f"SL={sl:.4f} ({sl_pct:.2f}%) vs LiqEst={liq_est:.4f} ({liq_pct:.2f}%) | "
             f"레버리지={leverage}x"
         )
 
@@ -264,9 +281,8 @@ def execute_order(sig: dict) -> bool:
 
         amount = _ensure_min_notional(symbol, amount, entry)
 
-        # 3. SL / 강제청산 가격 안전 체크 (LONG만: SHORT는 반대 방향 공식 필요)
-        if direction == "long":
-            _check_sl_above_liquidation(symbol, entry, sl, leverage)
+        # 3. SL / 강제청산 가격 안전 체크 (v5.1: LONG + SHORT 모두 검증)
+        _check_sl_above_liquidation(symbol, entry, sl, leverage, direction)
 
         logger.info(
             f"[ORDER] 진입 시도 | {strategy_id} | {symbol} {dir_label} | "

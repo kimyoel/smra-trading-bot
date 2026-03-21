@@ -50,6 +50,13 @@ v2.13:
          - 전략별 최적 TP/SL 매칭: registry의 tp_mult/sl_mult → arbiter → order_manager 흐름 확인
 v2.18:
   [FIX] 텔레그램 알림 중복 발송 완전 수정
+v5.1:
+  [레버리지] WFA 보고서 레버리지 섹션 반영
+  - 공식: recommended = floor(0.80 / (SL% + 0.4%))
+  - leverage 값: L1=27, L2=14, L3=12, L4=33, L5=88
+                  S1=27, S2=18, S3=18, S4=23, S5=23
+  - max_leverage: theoretical_max 적용
+  - _check_sl_above_liquidation SHORT 방향 지원 추가 (order_manager v2.17)
 v5.0:
   [전략 교체] WFA OOS 보고서 기반 BTCUSDT 15m 전용 10개 전략으로 교체
   - 기존 17개 다심볼(BTC/ETH/XRP) → BTCUSDT 15m LONG 5 + SHORT 5
@@ -366,7 +373,7 @@ def _update_prev_snapshot(
 
 
 def main() -> None:
-    logger.info("🚀 SMRA Bot v5.0 시작 (BTCUSDT 15m WFA 10전략 + Score 기반 충돌 해소)")
+    logger.info("🚀 SMRA Bot v5.1 시작 (BTCUSDT 15m WFA 10전략 + Score 충돌 해소 + WFA 레버리지)")
     logger.info(f"루프 간격: 15분봉 마감 동기화 (96루프/일) | 10개 전략 매 루프 평가 | Score 순위 충돌 해소")
 
     while True:
