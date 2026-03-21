@@ -50,6 +50,12 @@ v2.13:
          - 전략별 최적 TP/SL 매칭: registry의 tp_mult/sl_mult → arbiter → order_manager 흐름 확인
 v2.18:
   [FIX] 텔레그램 알림 중복 발송 완전 수정
+v5.2:
+  [5분봉 추가] BTCUSDT_5m_WFA_Report.docx 기반 5분봉 전략 10개 추가
+  - 기존 15m 10개 + 5m 10개 = 총 20개 전략
+  - 루프 주기: 15분봉(900초) → 5분봉(300초) 변경 (288루프/일)
+  - 5m 전략: 매 루프 평가, 15m 전략: 3루프마다 평가
+  - 5m 레버리지: 보고서 권장값 적용 (10~20x, 노이즈 감안 보수적)
 v5.1:
   [레버리지] WFA 보고서 레버리지 섹션 반영
   - 공식: recommended = floor(0.80 / (SL% + 0.4%))
@@ -91,11 +97,11 @@ logger = get_logger("main")
 # max_hold_bars × TF_BAR_HOURS[tf] = 최대 보유 시간(h)
 TF_BAR_HOURS = {"5m": 1/12, "15m": 0.25, "1h": 1.0, "4h": 4.0}
 
-# [v2.16] 봉 마감 동기화 설정 — 15분봉 기준
-# 5m 전략 없음 → 최소 타임프레임 15m 기준 루프
-# 15m 전략 매 루프, 1h 전략 4번째 루프, 4h 전략 16번째 루프에 평가
-CANDLE_TF_SEC = 15 * 60  # 기준: 15분봉 (900초)
-CANDLE_OFFSET = 3        # 봉 마감 후 3초 뒤 실행 (데이터 확정 여유)
+# [v5.2] 봉 마감 동기화 설정 — 5분봉 기준
+# 5m 전략 추가로 최소 타임프레임 5m 기준 루프
+# 5m 전략 매 루프, 15m 전략 3번째 루프에 평가
+CANDLE_TF_SEC = 5 * 60   # 기준: 5분봉 (300초)
+CANDLE_OFFSET = 3         # 봉 마감 후 3초 뒤 실행 (데이터 확정 여유)
 
 # [v2.12] 루프 간 포지션 상태 추적 (청산 감지용)
 _prev_open_positions: dict = {}
@@ -108,23 +114,23 @@ _notified_entries: set = set()  # 진입 알림 발송 완료 목록
 
 def wait_for_candle_close() -> None:
     """
-    [v2.16] 다음 15분봉 마감 후 CANDLE_OFFSET초에 맞춰 sleep.
-    15분 정각(00, 15, 30, 45분)에 +3초 시점에 루프가 시작됨.
-    1시간봉(15분의 배수)·4시간봉은 자동으로 동기화됨.
+    [v5.2] 다음 5분봉 마감 후 CANDLE_OFFSET초에 맞춰 sleep.
+    5분 정각(00, 05, 10, 15, ..., 55분)에 +3초 시점에 루프가 시작됨.
+    15분봉(5분의 배수)은 자동으로 동기화됨.
     """
     now = time.time()
     next_close = (int(now / CANDLE_TF_SEC) + 1) * CANDLE_TF_SEC
     sleep_sec  = next_close + CANDLE_OFFSET - now
     wake_utc   = datetime.fromtimestamp(next_close + CANDLE_OFFSET, tz=timezone.utc)
     logger.info(
-        f"[LOOP] ⏱ 다음 15분봉 마감 대기: {sleep_sec:.1f}초 "
+        f"[LOOP] ⏱ 다음 5분봉 마감 대기: {sleep_sec:.1f}초 "
         f"(기상 시각 {wake_utc.strftime('%H:%M:%S')} UTC)"
     )
     time.sleep(max(0, sleep_sec))
 
 
 def _current_candle_id() -> int:
-    """현재 15분봉 ID (Unix timestamp를 900으로 나눈 정수)"""
+    """현재 5분봉 ID (Unix timestamp를 300으로 나눈 정수)"""
     return int(time.time() / CANDLE_TF_SEC)
 
 
@@ -373,8 +379,8 @@ def _update_prev_snapshot(
 
 
 def main() -> None:
-    logger.info("🚀 SMRA Bot v5.1 시작 (BTCUSDT 15m WFA 10전략 + Score 충돌 해소 + WFA 레버리지)")
-    logger.info(f"루프 간격: 15분봉 마감 동기화 (96루프/일) | 10개 전략 매 루프 평가 | Score 순위 충돌 해소")
+    logger.info("🚀 SMRA Bot v5.2 시작 (BTCUSDT 5m+15m WFA 20전략 + Score 충돌 해소 + WFA 레버리지)")
+    logger.info(f"루프 간격: 5분봉 마감 동기화 (288루프/일) | 20개 전략 (5m:매 루프, 15m:3루프마다) | Score 순위 충돌 해소")
 
     while True:
         start = time.time()
