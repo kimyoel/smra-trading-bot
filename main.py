@@ -1,5 +1,15 @@
 """
-main.py — SMRA Bot 메인 루프 (v6.3.4 — 텔레그램 알림 누락 수정)
+main.py — SMRA Bot 메인 루프 (v6.3.5 — TP/SL 청산 후 잔여 주문 미취소 버그 수정)
+
+v6.3.5:
+  [FIX] TP/SL 자연 청산 감지 시 잔여 Algo Order 미취소 버그 수정
+    → 기존: TP 또는 SL 체결로 포지션 청산 감지 시 notify_close만 호출
+    → 수정: cancel_all_open_orders(symbol, pos_side=direction) 추가
+    → 원인: TP/SL은 OCO가 아닌 독립 Algo Order이므로
+            하나가 체결되어도 나머지가 바이낸스에 잔존
+    → 영향: 잔여 주문이 재진입 후 의도치 않은 부분 청산 유발
+    → max_hold_bars 강제청산 경로(214행)에는 이미 있었으나
+      TP/SL 자연 청산 감지 경로(171-191행)에는 누락되어 있었음
 
 v6.3.4:
   [FIX] 재진입 시 진입 알림 누락 수정
@@ -180,6 +190,23 @@ def run_loop() -> None:
                 continue
 
             symbol, direction = parse_pos_key(prev_key)
+
+            # [v6.3.5] 잔여 TP/SL Algo Order 취소 (OCO 미사용 대응)
+            # TP 또는 SL 중 하나가 체결되어도 나머지가 바이낸스에 잔존함
+            # → 재진입 시 이전 잔여 주문이 의도치 않은 부분 청산 유발
+            # → 강제청산(214행)과 동일하게 cancel_all_open_orders 호출
+            try:
+                cancel_all_open_orders(symbol, pos_side=direction)
+                logger.info(
+                    f"[LOOP] {prev_key} 잔여 TP/SL 취소 완료 "
+                    f"(TP/SL 청산 감지 → 반대쪽 Algo Order 정리)"
+                )
+            except Exception as cancel_err:
+                logger.warning(
+                    f"[LOOP] {prev_key} 잔여 TP/SL 취소 실패 "
+                    f"(수동 확인 필요): {cancel_err}"
+                )
+
             entry_time = prev_info.get("entry_time", 0)
             prev_tf    = prev_info.get("timeframe", "")
             pnl        = fetch_realized_pnl(symbol, entry_time)
@@ -391,7 +418,7 @@ def _update_prev_snapshot(
 
 
 def main() -> None:
-    logger.info("🚀 SMRA Bot v6.3.4 시작 (Hedge Mode + One-way 호환)")
+    logger.info("🚀 SMRA Bot v6.3.5 시작 (Hedge Mode + One-way 호환)")
     logger.info(f"120개 전략 (BTC 40 + ETH 40 + XRP 40) | Hedge Mode | Score 순위 충돌 해소")
 
     # [v6.3.3] 헤지 모드 전환 시도 — 실패해도 봇 계속 동작
