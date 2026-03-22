@@ -1,5 +1,17 @@
 """
-strategies/registry.py — WFA OOS 백테스트 검증 전략 레지스트리 (v6.2)
+strategies/registry.py — WFA OOS 백테스트 검증 전략 레지스트리 (v6.3)
+
+[v6.3] BTCUSDT 15분봉 WFA 전략 전면 교체
+  - 출처: BTCUSDT_15m_WFA_Report.docx (2026-03-22)
+  - LONG 5개 + SHORT 5개 전면 교체 (기존 전략 대비 Score 대폭 향상)
+  - 레버리지: 전 전략 20× 통일 (보고서 권장)
+  - LONG: WILLR_BB_EMA_STACK(유지), SMA_PSAR_ADX_INV(신규), PSAR_ICHIMOKU_ATR_SIG(신규),
+          EMA_MACD_PSAR(유지), EMA_PSAR_AD(신규)
+  - SHORT: OBV_CCI_MOM(신규), OBV_CCI_ROC(신규), ADX_KELTNER_AD(신규),
+           BB_EMA_STACK(유지), BB_EMA_STACK_ATR_INV(유지)
+  - 제거: ADX_WILLR_EMA_STACK, AROON_DONCHIAN_VOL_INV, EMA_PSAR_MOM,
+          WILLR_BB_OBV, SMA_ICHIMOKU_STDDEV, OBV_KELTNER_ADX_INV
+  - 총 120개 전략: BTC 40 + ETH 40 + XRP 40
 
 [v6.2] XRPUSDT 4시간봉 WFA 전략 10개 추가
   - 출처: XRPUSDT_4h_WFA_Report.docx (2026-03-21)
@@ -78,7 +90,7 @@ STRATEGY_REGISTRY = {
     # LONG 전략 — 상위 5개 (Score 순)
     # ═══════════════════════════════════════════════════════════
 
-    # LONG #1 — 전체 2위 | 7윈도우 생존, 3중 컨펌 구조
+    # LONG #1 — Score 24.92 | 7윈도우 생존, 3중 컨펌 구조
     # 진입: WR(14)<-80 AND Close<BB_lower(20,2) AND EMA5>EMA26>EMA50
     # 해석: Williams %R 과매도 + BB 하단 이탈 + EMA 정배열 → 추세 추종형 평균 회귀
     "L1_WILLR_BB_EMA_STACK": {
@@ -87,12 +99,12 @@ STRATEGY_REGISTRY = {
         "timeframe":      "15m",
         "direction":      "long",
         "entry_fn":       "entry_long_willr_bb_ema_stack",
-        "score":          19.21,
+        "score":          24.92,
         "survived_windows": 7,
         "avg_calmar":     3.649,
         "min_calmar":     1.223,
-        "leverage":       27,       # recommended: floor(0.80/(0.025+0.004))=27
-        "max_leverage":   34,       # theoretical: floor(1.00/(0.025+0.004))=34
+        "leverage":       20,       # 보고서 권장 20×
+        "max_leverage":   20,
         "tp_type":        "fixed",
         "tp_mult":        0.10,      # TP 10.0%
         "sl_mult":        0.025,     # SL 2.5%
@@ -100,65 +112,64 @@ STRATEGY_REGISTRY = {
         "max_hold_bars":  48,        # 48봉 (12시간)
     },
 
-    # LONG #2 — 전체 5위 | 안정성 LONG 1위 (min_calmar 2.451)
-    # 진입: WR(14)<-80 AND EMA5>EMA26>EMA50
-    # 필터: ADX(14)>25 (추세 강도 확인)
-    "L2_ADX_WILLR_EMA_STACK": {
-        "id":             "L2_ADX_WILLR_EMA_STACK",
+    # LONG #2 — Score 24.14 | avg_calmar 4.80 최강
+    # 진입: SMA10>SMA20 AND SAR↑(0.02,0.2)
+    # 필터: ADX(14)≤25 (횡보/약추세 필터)
+    "L2_SMA_PSAR_ADX_INV": {
+        "id":             "L2_SMA_PSAR_ADX_INV",
         "symbol":         "BTC/USDT",
         "timeframe":      "15m",
         "direction":      "long",
-        "entry_fn":       "entry_long_adx_willr_ema_stack",
-        "score":          18.73,
-        "survived_windows": 5,
-        "avg_calmar":     2.953,
-        "min_calmar":     2.451,
-        "leverage":       14,       # recommended: floor(0.80/(0.05+0.004))=14
-        "max_leverage":   18,       # theoretical: floor(1.00/(0.05+0.004))=18
+        "entry_fn":       "entry_long_sma_psar_adx_inv",
+        "score":          24.14,
+        "survived_windows": 6,
+        "avg_calmar":     4.801,
+        "min_calmar":     0.468,
+        "leverage":       20,       # 보고서 권장 20×
+        "max_leverage":   20,
         "tp_type":        "fixed",
-        "tp_mult":        0.06,      # TP 6.0%
-        "sl_mult":        0.05,      # SL 5.0%
-        "base_mdd":       0.05,
+        "tp_mult":        0.10,      # TP 10.0%
+        "sl_mult":        0.008,     # SL 0.8%
+        "base_mdd":       0.008,
         "max_hold_bars":  48,        # 48봉 (12시간)
     },
 
-    # LONG #3 — 전체 8위 | 저볼륨 돌파 특화
-    # 진입: AroonUp(25)>70 AND Close>Donchian_upper(20)
-    # 필터: Volume ≤ SMA(20)×1.5 (거래량 미급증 조건)
-    "L3_AROON_DONCHIAN_VOL_INV": {
-        "id":             "L3_AROON_DONCHIAN_VOL_INV",
+    # LONG #3 — Score 23.54 | min_calmar 3.13 방어적
+    # 진입: SAR↑(0.02,0.2) AND Tenkan>Kijun
+    # 필터: ATR(14)>ATR_SMA (변동성 확대 조건)
+    "L3_PSAR_ICHIMOKU_ATR_SIG": {
+        "id":             "L3_PSAR_ICHIMOKU_ATR_SIG",
         "symbol":         "BTC/USDT",
         "timeframe":      "15m",
         "direction":      "long",
-        "entry_fn":       "entry_long_aroon_donchian_vol_inv",
-        "score":          15.97,
-        "survived_windows": 5,
-        "avg_calmar":     2.044,
-        "min_calmar":     1.619,
-        "leverage":       12,       # recommended: floor(0.80/(0.06+0.004))=12
-        "max_leverage":   15,       # theoretical: floor(1.00/(0.06+0.004))=15
+        "entry_fn":       "entry_long_psar_ichimoku_atr_sig",
+        "score":          23.54,
+        "survived_windows": 4,
+        "avg_calmar":     3.524,
+        "min_calmar":     3.127,
+        "leverage":       20,       # 보고서 권장 20×
+        "max_leverage":   20,
         "tp_type":        "fixed",
-        "tp_mult":        0.12,      # TP 12.0%
-        "sl_mult":        0.06,      # SL 6.0%
-        "base_mdd":       0.06,
+        "tp_mult":        0.04,      # TP 4.0%
+        "sl_mult":        0.008,     # SL 0.8%
+        "base_mdd":       0.008,
         "max_hold_bars":  48,        # 48봉 (12시간)
     },
 
-    # LONG #4 — 전체 9위 | LONG 최고 avg_calmar 4.042
-    # 진입: EMA12>EMA26 AND MACD>Signal(12,26,9) AND Parabolic SAR 상승 전환
-    # 특징: max_hold 12봉(3시간) — 단기 포지션
+    # LONG #4 — Score 21.41 | 단기(Hold=12) 추세 추종
+    # 진입: EMA12>EMA26 AND MACD>Signal(12,26,9) AND SAR↑(0.02,0.2)
     "L4_EMA_MACD_PSAR": {
         "id":             "L4_EMA_MACD_PSAR",
         "symbol":         "BTC/USDT",
         "timeframe":      "15m",
         "direction":      "long",
         "entry_fn":       "entry_long_ema_macd_psar",
-        "score":          15.64,
+        "score":          21.41,
         "survived_windows": 6,
         "avg_calmar":     4.042,
         "min_calmar":     0.675,
-        "leverage":       33,       # recommended: floor(0.80/(0.02+0.004))=33
-        "max_leverage":   41,       # theoretical: floor(1.00/(0.02+0.004))=41
+        "leverage":       20,       # 보고서 권장 20×
+        "max_leverage":   20,
         "tp_type":        "fixed",
         "tp_mult":        0.06,      # TP 6.0%
         "sl_mult":        0.02,      # SL 2.0%
@@ -166,113 +177,109 @@ STRATEGY_REGISTRY = {
         "max_hold_bars":  12,        # 12봉 (3시간)
     },
 
-    # LONG #5 — 전체 10위 | 고RR 타이트 손절형 (RR 24배)
-    # 진입: EMA12>EMA26 AND Parabolic SAR 상승 전환 AND MOM(10)>0
-    # 특징: SL 0.5% 극타이트 — 높은 손절 빈도, 한 번 적중 시 12% 수익
-    "L5_EMA_PSAR_MOM": {
-        "id":             "L5_EMA_PSAR_MOM",
+    # LONG #5 — Score 20.75 | EMA+PSAR+A/D 자금흐름 확인
+    # 진입: EMA12>EMA26 AND SAR↑(0.02,0.2) AND AD>AD_SMA(20)
+    "L5_EMA_PSAR_AD": {
+        "id":             "L5_EMA_PSAR_AD",
         "symbol":         "BTC/USDT",
         "timeframe":      "15m",
         "direction":      "long",
-        "entry_fn":       "entry_long_ema_psar_mom",
-        "score":          15.53,
-        "survived_windows": 5,
-        "avg_calmar":     2.050,
-        "min_calmar":     1.472,
-        "leverage":       88,       # recommended: floor(0.80/(0.005+0.004))=88
-        "max_leverage":   111,      # theoretical: floor(1.00/(0.005+0.004))=111
+        "entry_fn":       "entry_long_ema_psar_ad",
+        "score":          20.75,
+        "survived_windows": 6,
+        "avg_calmar":     2.556,
+        "min_calmar":     0.707,
+        "leverage":       20,       # 보고서 권장 20×
+        "max_leverage":   20,
         "tp_type":        "fixed",
-        "tp_mult":        0.12,      # TP 12.0%
-        "sl_mult":        0.005,     # SL 0.5%
-        "base_mdd":       0.005,
-        "max_hold_bars":  48,        # 48봉 (12시간)
+        "tp_mult":        0.05,      # TP 5.0%
+        "sl_mult":        0.01,      # SL 1.0%
+        "base_mdd":       0.01,
+        "max_hold_bars":  24,        # 24봉 (6시간)
     },
 
     # ═══════════════════════════════════════════════════════════
     # SHORT 전략 — 상위 5개 (Score 순)
     # ═══════════════════════════════════════════════════════════
 
-    # SHORT #1 — 전체 1위 | 종합 스코어 최고 (20.36)
-    # 진입: WR(14)>-20 AND Close>BB_upper(20,2) AND OBV<OBV_SMA(20)
-    # 해석: 가격(BB) + 모멘텀(WR) + 거래량(OBV) 3차원 숏 신호
-    "S1_WILLR_BB_OBV": {
-        "id":             "S1_WILLR_BB_OBV",
+    # SHORT #1 — Score 26.75 | 최고 스코어, 수익성 최강
+    # 진입: OBV<OBV_SMA(20) AND CCI(20)>+100 AND MOM(10)<0
+    "S1_OBV_CCI_MOM": {
+        "id":             "S1_OBV_CCI_MOM",
         "symbol":         "BTC/USDT",
         "timeframe":      "15m",
         "direction":      "short",
-        "entry_fn":       "entry_short_willr_bb_obv",
-        "score":          20.36,
-        "survived_windows": 7,
-        "avg_calmar":     8.013,
-        "min_calmar":     1.387,
-        "leverage":       27,       # recommended: floor(0.80/(0.025+0.004))=27
-        "max_leverage":   34,       # theoretical: floor(1.00/(0.025+0.004))=34
+        "entry_fn":       "entry_short_obv_cci_mom",
+        "score":          26.75,
+        "survived_windows": 5,
+        "avg_calmar":     6.372,
+        "min_calmar":     1.598,
+        "leverage":       20,       # 보고서 권장 20×
+        "max_leverage":   20,
         "tp_type":        "fixed",
         "tp_mult":        0.03,      # TP 3.0%
-        "sl_mult":        0.025,     # SL 2.5%
-        "base_mdd":       0.025,
+        "sl_mult":        0.005,     # SL 0.5%
+        "base_mdd":       0.005,
         "max_hold_bars":  48,        # 48봉 (12시간)
     },
 
-    # SHORT #2 — 전체 3위 | avg_calmar 41.3 (이상치 주의)
-    # 진입: SMA10<SMA20 AND Tenkan<Kijun AND STD상승 & Close<SMA(20)
-    # 해석: SMA(추세) + 이치모쿠(전환선/기준선) + STDDEV(변동성 확장) 3중 조건
-    "S2_SMA_ICHIMOKU_STDDEV": {
-        "id":             "S2_SMA_ICHIMOKU_STDDEV",
+    # SHORT #2 — Score 26.75 | MOM과 동등, ROC 대체 사용
+    # 진입: OBV<OBV_SMA(20) AND CCI(20)>+100 AND ROC(10)<0%
+    "S2_OBV_CCI_ROC": {
+        "id":             "S2_OBV_CCI_ROC",
         "symbol":         "BTC/USDT",
         "timeframe":      "15m",
         "direction":      "short",
-        "entry_fn":       "entry_short_sma_ichimoku_stddev",
-        "score":          19.36,
-        "survived_windows": 6,
-        "avg_calmar":     41.302,
-        "min_calmar":     1.204,
-        "leverage":       18,       # recommended: floor(0.80/(0.04+0.004))=18
-        "max_leverage":   22,       # theoretical: floor(1.00/(0.04+0.004))=22
-        "tp_type":        "fixed",
-        "tp_mult":        0.05,      # TP 5.0%
-        "sl_mult":        0.04,      # SL 4.0%
-        "base_mdd":       0.04,
-        "max_hold_bars":  48,        # 48봉 (12시간)
-    },
-
-    # SHORT #3 — 전체 4위 | 횡보장 특화 역추세 (min_calmar 1.971 SHORT 최고)
-    # 진입: OBV<OBV_SMA(20) AND Close>KC_upper(20,2)
-    # 필터: ADX(14)≤25 (추세 약세 = 횡보장에서만 진입)
-    "S3_OBV_KELTNER_ADX_INV": {
-        "id":             "S3_OBV_KELTNER_ADX_INV",
-        "symbol":         "BTC/USDT",
-        "timeframe":      "15m",
-        "direction":      "short",
-        "entry_fn":       "entry_short_obv_keltner_adx_inv",
-        "score":          18.98,
+        "entry_fn":       "entry_short_obv_cci_roc",
+        "score":          26.75,
         "survived_windows": 5,
-        "avg_calmar":     20.451,
-        "min_calmar":     1.971,
-        "leverage":       18,       # recommended: floor(0.80/(0.04+0.004))=18
-        "max_leverage":   22,       # theoretical: floor(1.00/(0.04+0.004))=22
+        "avg_calmar":     6.372,
+        "min_calmar":     1.598,
+        "leverage":       20,       # 보고서 권장 20×
+        "max_leverage":   20,
         "tp_type":        "fixed",
-        "tp_mult":        0.08,      # TP 8.0%
-        "sl_mult":        0.04,      # SL 4.0%
-        "base_mdd":       0.04,
+        "tp_mult":        0.03,      # TP 3.0%
+        "sl_mult":        0.005,     # SL 0.5%
+        "base_mdd":       0.005,
         "max_hold_bars":  48,        # 48봉 (12시간)
     },
 
-    # SHORT #4 — 전체 6위 | 7윈도우 안정형, 2지표 조합 (단순 = 강건)
+    # SHORT #3 — Score 25.18 | 생존창 6, 안정성 균형
+    # 진입: Close>KC_hi(20,2) AND AD<AD_SMA(20)
+    # 필터: ADX(14)>25 (강추세 필터)
+    "S3_ADX_KELTNER_AD": {
+        "id":             "S3_ADX_KELTNER_AD",
+        "symbol":         "BTC/USDT",
+        "timeframe":      "15m",
+        "direction":      "short",
+        "entry_fn":       "entry_short_adx_keltner_ad",
+        "score":          25.18,
+        "survived_windows": 6,
+        "avg_calmar":     5.452,
+        "min_calmar":     1.499,
+        "leverage":       20,       # 보고서 권장 20×
+        "max_leverage":   20,
+        "tp_type":        "fixed",
+        "tp_mult":        0.04,      # TP 4.0%
+        "sl_mult":        0.02,      # SL 2.0%
+        "base_mdd":       0.02,
+        "max_hold_bars":  48,        # 48봉 (12시간)
+    },
+
+    # SHORT #4 — Score 23.81 | 생존창 7 최고, 단순 구조
     # 진입: Close>BB_upper(20,2) AND EMA5<EMA26<EMA50
-    # 필터: 없음 (2지표 조합)
     "S4_BB_EMA_STACK": {
         "id":             "S4_BB_EMA_STACK",
         "symbol":         "BTC/USDT",
         "timeframe":      "15m",
         "direction":      "short",
         "entry_fn":       "entry_short_bb_ema_stack",
-        "score":          18.73,
+        "score":          23.81,
         "survived_windows": 7,
         "avg_calmar":     3.799,
         "min_calmar":     1.055,
-        "leverage":       23,       # recommended: floor(0.80/(0.03+0.004))=23
-        "max_leverage":   29,       # theoretical: floor(1.00/(0.03+0.004))=29
+        "leverage":       20,       # 보고서 권장 20×
+        "max_leverage":   20,
         "tp_type":        "fixed",
         "tp_mult":        0.08,      # TP 8.0%
         "sl_mult":        0.03,      # SL 3.0%
@@ -280,7 +287,7 @@ STRATEGY_REGISTRY = {
         "max_hold_bars":  48,        # 48봉 (12시간)
     },
 
-    # SHORT #5 — 전체 7위 | #4 ATR 필터 추가 버전
+    # SHORT #5 — Score 23.81 | #4 + ATR 저변동 필터
     # 진입: Close>BB_upper(20,2) AND EMA5<EMA26<EMA50
     # 필터: ATR(14) ≤ ATR_SMA (변동성 평균 이하)
     "S5_BB_EMA_STACK_ATR_INV": {
@@ -289,12 +296,12 @@ STRATEGY_REGISTRY = {
         "timeframe":      "15m",
         "direction":      "short",
         "entry_fn":       "entry_short_bb_ema_stack_atr_inv",
-        "score":          18.73,
+        "score":          23.81,
         "survived_windows": 7,
         "avg_calmar":     3.799,
         "min_calmar":     1.055,
-        "leverage":       23,       # recommended: floor(0.80/(0.03+0.004))=23
-        "max_leverage":   29,       # theoretical: floor(1.00/(0.03+0.004))=29
+        "leverage":       20,       # 보고서 권장 20×
+        "max_leverage":   20,
         "tp_type":        "fixed",
         "tp_mult":        0.08,      # TP 8.0%
         "sl_mult":        0.03,      # SL 3.0%
