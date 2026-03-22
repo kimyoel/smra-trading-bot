@@ -659,6 +659,139 @@ def entry_short_bb_ema_stack_atr_inv(df: pd.DataFrame) -> bool:
 
 
 # ═══════════════════════════════════════════════════════════════
+# [v6.3] BTC 15m 신규 엔트리 함수 — BTCUSDT_15m_WFA_Report.docx (2026-03-22)
+# ═══════════════════════════════════════════════════════════════
+
+def entry_long_sma_psar_adx_inv(df: pd.DataFrame) -> bool:
+    """
+    LONG L2 — SMA 골든크로스 + PSAR 상승 + ADX 횡보 필터
+    [L] SMA10>SMA20 AND SAR↑(0.02,0.2)
+    [F] ADX(14)≤25
+    """
+    sma10 = _sma(df, "close", 10)
+    sma20 = _sma(df, "close", 20)
+    psar_dir = _psar(df)
+    adx = _adx_value(df)
+    if sma10 is None or sma20 is None or psar_dir is None or adx is None:
+        return False
+    if sma10 <= sma20:
+        return False
+    if psar_dir != "up":
+        return False
+    if adx > 25:
+        return False
+    return True
+
+
+def entry_long_psar_ichimoku_atr_sig(df: pd.DataFrame) -> bool:
+    """
+    LONG L3 — PSAR 상승 + 이치모쿠 전환선>기준선 + ATR 변동성 확대
+    [L] SAR↑(0.02,0.2) AND Tenkan>Kijun
+    [F] ATR(14)>ATR_SMA
+    """
+    psar_dir = _psar(df)
+    tenkan, kijun = _ichimoku(df)
+    atr_val = _atr(df)
+    if psar_dir is None or tenkan is None or kijun is None or atr_val is None:
+        return False
+    if psar_dir != "up":
+        return False
+    if tenkan <= kijun:
+        return False
+    # ATR > ATR_SMA 필터
+    atr_series = ta.atr(df["high"], df["low"], df["close"], length=14)
+    if atr_series is None or len(atr_series) < 20:
+        return False
+    atr_sma_val = atr_series.rolling(20).mean().iloc[-1]
+    if pd.isna(atr_sma_val):
+        return False
+    if atr_val <= atr_sma_val:
+        return False
+    return True
+
+
+def entry_long_ema_psar_ad(df: pd.DataFrame) -> bool:
+    """
+    LONG L5 — EMA 정배열 + PSAR 상승 + A/D 자금흐름 상승
+    [L] EMA12>EMA26 AND SAR↑(0.02,0.2) AND AD>AD_SMA(20)
+    """
+    ema12 = _ema(df, 12)
+    ema26 = _ema(df, 26)
+    psar_dir = _psar(df)
+    ad_val, ad_sma = _ad(df)
+    if ema12 is None or ema26 is None or psar_dir is None:
+        return False
+    if ad_val is None or ad_sma is None:
+        return False
+    if ema12 <= ema26:
+        return False
+    if psar_dir != "up":
+        return False
+    if ad_val <= ad_sma:
+        return False
+    return True
+
+
+def entry_short_obv_cci_mom(df: pd.DataFrame) -> bool:
+    """
+    SHORT S1 — OBV 매도세 + CCI 과매수 + 모멘텀 하락
+    [S] OBV<OBV_SMA(20) AND CCI(20)>+100 AND MOM(10)<0
+    """
+    obv_val, obv_sma = _obv(df)
+    cci = _cci(df)
+    mom = _mom(df)
+    if obv_val is None or obv_sma is None or cci is None or mom is None:
+        return False
+    if obv_val >= obv_sma:
+        return False
+    if cci <= 100:
+        return False
+    if mom >= 0:
+        return False
+    return True
+
+
+def entry_short_obv_cci_roc(df: pd.DataFrame) -> bool:
+    """
+    SHORT S2 — OBV 매도세 + CCI 과매수 + ROC 하락
+    [S] OBV<OBV_SMA(20) AND CCI(20)>+100 AND ROC(10)<0%
+    """
+    obv_val, obv_sma = _obv(df)
+    cci = _cci(df)
+    roc = _roc(df)
+    if obv_val is None or obv_sma is None or cci is None or roc is None:
+        return False
+    if obv_val >= obv_sma:
+        return False
+    if cci <= 100:
+        return False
+    if roc >= 0:
+        return False
+    return True
+
+
+def entry_short_adx_keltner_ad(df: pd.DataFrame) -> bool:
+    """
+    SHORT S3 — 켈트너 채널 상단 돌파 + A/D 유출 + ADX 강추세
+    [S] Close>KC_hi(20,2) AND AD<AD_SMA(20)
+    [F] ADX(14)>25
+    """
+    kc_upper, kc_lower = _keltner(df)
+    ad_val, ad_sma = _ad(df)
+    adx = _adx_value(df)
+    close = df["close"].iloc[-1]
+    if kc_upper is None or ad_val is None or ad_sma is None or adx is None:
+        return False
+    if close <= kc_upper:
+        return False
+    if ad_val >= ad_sma:
+        return False
+    if adx <= 25:
+        return False
+    return True
+
+
+# ═══════════════════════════════════════════════════════════════
 # 5분봉 추가 헬퍼: RSI, Stochastic, CCI, VWAP, AD, MFI
 # ═══════════════════════════════════════════════════════════════
 
@@ -3644,18 +3777,25 @@ def entry_short_xrp4h_mom_ema_stack(df: pd.DataFrame) -> bool:
 # entry_fn 이름 → 함수 매핑
 # ═══════════════════════════════════════════════════════════════
 ENTRY_FN_MAP = {
-    # 15m LONG 전략
+    # 15m LONG 전략 (v6.3 — BTCUSDT_15m_WFA_Report.docx 2026-03-22)
     "entry_long_willr_bb_ema_stack":     entry_long_willr_bb_ema_stack,
+    "entry_long_sma_psar_adx_inv":       entry_long_sma_psar_adx_inv,
+    "entry_long_psar_ichimoku_atr_sig":  entry_long_psar_ichimoku_atr_sig,
+    "entry_long_ema_macd_psar":          entry_long_ema_macd_psar,
+    "entry_long_ema_psar_ad":            entry_long_ema_psar_ad,
+    # 15m SHORT 전략 (v6.3 — BTCUSDT_15m_WFA_Report.docx 2026-03-22)
+    "entry_short_obv_cci_mom":           entry_short_obv_cci_mom,
+    "entry_short_obv_cci_roc":           entry_short_obv_cci_roc,
+    "entry_short_adx_keltner_ad":        entry_short_adx_keltner_ad,
+    "entry_short_bb_ema_stack":          entry_short_bb_ema_stack,
+    "entry_short_bb_ema_stack_atr_inv":  entry_short_bb_ema_stack_atr_inv,
+    # 15m 레거시 (다른 모듈에서 참조 시 호환용)
     "entry_long_adx_willr_ema_stack":    entry_long_adx_willr_ema_stack,
     "entry_long_aroon_donchian_vol_inv": entry_long_aroon_donchian_vol_inv,
-    "entry_long_ema_macd_psar":          entry_long_ema_macd_psar,
     "entry_long_ema_psar_mom":           entry_long_ema_psar_mom,
-    # 15m SHORT 전략
     "entry_short_willr_bb_obv":          entry_short_willr_bb_obv,
     "entry_short_sma_ichimoku_stddev":   entry_short_sma_ichimoku_stddev,
     "entry_short_obv_keltner_adx_inv":   entry_short_obv_keltner_adx_inv,
-    "entry_short_bb_ema_stack":          entry_short_bb_ema_stack,
-    "entry_short_bb_ema_stack_atr_inv":  entry_short_bb_ema_stack_atr_inv,
     # 5m LONG 전략
     "entry_long_5m_bb_ema_stack_vol_inv":    entry_long_5m_bb_ema_stack_vol_inv,
     "entry_long_5m_macd_ichimoku_stddev":    entry_long_5m_macd_ichimoku_stddev,

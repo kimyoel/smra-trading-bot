@@ -1,5 +1,10 @@
 """
-utils/notifier.py — 텔레그램 알림 (v6.3.2)
+utils/notifier.py — 텔레그램 알림 (v6.3.4)
+
+v6.3.4:
+  [FIX] send_telegram 재시도 로직 추가 (최대 2회, 1초 딜레이)
+    → 네트워크 일시 장애/타임아웃 시 알림 영구 누락 방지
+  [FIX] 429 Rate Limit 대응 (재시도 시 2초 대기)
 
 v6.3.2:
   [FIX] 파일 기반 에러 알림 중복 차단 (_error_dedup)
@@ -69,24 +74,74 @@ def _is_error_duplicate(error_msg: str) -> bool:
     return False
 
 
+# ── 재시도 설정 ─────────────────────────────────────────────────
+SEND_MAX_RETRIES = 2        # 최대 재시도 횟수
+SEND_RETRY_DELAY  = 1.0     # 기본 재시도 딜레이 (초)
+SEND_RATE_LIMIT_DELAY = 2.0 # 429 Rate Limit 시 대기 (초)
+
+
 def send_telegram(message: str) -> bool:
-    """텔레그램 메시지 전송. 실패해도 봇은 계속 동작."""
+    """
+    텔레그램 메시지 전송. (v6.3.4: 재시도 로직 추가)
+    실패해도 봇은 계속 동작.
+    """
     if not BOT_TOKEN or not CHAT_ID:
         logger.warning("[TELEGRAM] 환경변수 미설정 — 알림 스킵")
         return False
-    try:
-        resp = requests.post(
-            BASE_URL,
-            json={"chat_id": CHAT_ID, "text": message, "parse_mode": "HTML"},
-            timeout=10
-        )
-        if resp.status_code != 200:
-            logger.warning(f"[TELEGRAM] 전송 실패: {resp.status_code} {resp.text}")
+
+    for attempt in range(1 + SEND_MAX_RETRIES):
+        try:
+            resp = requests.post(
+                BASE_URL,
+                json={"chat_id": CHAT_ID, "text": message, "parse_mode": "HTML"},
+                timeout=10,
+            )
+            if resp.status_code == 200:
+                return True
+
+            # 429 Rate Limit — 더 길게 대기 후 재시도
+            if resp.status_code == 429:
+                retry_after = SEND_RATE_LIMIT_DELAY
+                try:
+                    retry_after = float(resp.json().get("parameters", {}).get("retry_after", SEND_RATE_LIMIT_DELAY))
+                except Exception:
+                    pass
+                logger.warning(
+                    f"[TELEGRAM] 429 Rate Limit (attempt {attempt+1}/{1+SEND_MAX_RETRIES}) "
+                    f"— {retry_after:.1f}초 대기 후 재시도"
+                )
+                if attempt < SEND_MAX_RETRIES:
+                    time.sleep(retry_after)
+                    continue
+
+            logger.warning(
+                f"[TELEGRAM] 전송 실패 (attempt {attempt+1}/{1+SEND_MAX_RETRIES}): "
+                f"{resp.status_code} {resp.text[:200]}"
+            )
+            if attempt < SEND_MAX_RETRIES:
+                time.sleep(SEND_RETRY_DELAY)
+                continue
             return False
-        return True
-    except Exception as e:
-        logger.warning(f"[TELEGRAM] 예외 발생: {e}")
-        return False
+
+        except requests.exceptions.Timeout:
+            logger.warning(
+                f"[TELEGRAM] 타임아웃 (attempt {attempt+1}/{1+SEND_MAX_RETRIES})"
+            )
+            if attempt < SEND_MAX_RETRIES:
+                time.sleep(SEND_RETRY_DELAY)
+                continue
+            return False
+
+        except Exception as e:
+            logger.warning(
+                f"[TELEGRAM] 예외 (attempt {attempt+1}/{1+SEND_MAX_RETRIES}): {e}"
+            )
+            if attempt < SEND_MAX_RETRIES:
+                time.sleep(SEND_RETRY_DELAY)
+                continue
+            return False
+
+    return False
 
 
 def notify_entry(strategy_id: str, symbol: str, side: str,

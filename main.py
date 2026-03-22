@@ -1,5 +1,12 @@
 """
-main.py — SMRA Bot 메인 루프 (v6.3.3 — One-way 호환 + 자동 헤지 전환)
+main.py — SMRA Bot 메인 루프 (v6.3.4 — 텔레그램 알림 누락 수정)
+
+v6.3.4:
+  [FIX] 재진입 시 진입 알림 누락 수정
+    → 청산 감지 시 _notified_entries에서도 해당 키 제거
+    → 동일 전략 재진입 시 notify_entry 정상 발송
+  [FIX] record_position_timeframe 예외 안전 처리
+    → 파일 I/O 예외 발생해도 notify_entry까지 정상 도달
 
 v6.3.3:
   [FIX] 헤지 모드 전환 실패 시 봇 종료하지 않고 One-way 호환 모드로 계속 동작
@@ -179,6 +186,8 @@ def run_loop() -> None:
             result_lbl = "✅ 익절" if pnl > 0 else "❌ 손절"
             notify_close(strat_id, f"{symbol} [{direction.upper()}]", result_lbl, pnl, timeframe=prev_tf)
             _notified_closes.add(close_key)
+            # [v6.3.4] 청산 완료 → 진입 알림 기록 제거 (재진입 시 알림 정상 발송)
+            _notified_entries.discard(close_key)
             logger.info(f"[LOOP] {prev_key} 청산 감지 (TP/SL) → 텔레그램 알림 (PnL={pnl:+.4f})")
 
     # ── 4. max_hold_bars 초과 포지션 강제 청산 (v6.3: pos_key) ─
@@ -209,7 +218,10 @@ def run_loop() -> None:
             result_lbl  = "✅ 익절" if force_pnl > 0 else "❌ 손절"
             notify_close(strategy_id, f"{symbol} [{direction.upper()}]",
                          f"⏰ {max_hold_bars}봉 강제청산 ({result_lbl})", force_pnl, timeframe=tf)
-            _notified_closes.add(f"{pos_key}:{strategy_id}")
+            force_close_key = f"{pos_key}:{strategy_id}"
+            _notified_closes.add(force_close_key)
+            # [v6.3.4] 강제청산 완료 → 진입 알림 기록 제거 (재진입 시 알림 정상 발송)
+            _notified_entries.discard(force_close_key)
             _force_closed_this_loop.add(pos_key)
 
     # ── 4-1. ATR 전략 TP/SL 매 봉 갱신 ──────────────────────
@@ -327,8 +339,11 @@ def run_loop() -> None:
         success = execute_order(top_sig)
 
         if success:
-            # ✅ 진입 성공 → 기록
-            record_position_timeframe(symbol, timeframe, strategy_id, direction=direction)
+            # ✅ 진입 성공 → 기록 (v6.3.4: 예외 안전)
+            try:
+                record_position_timeframe(symbol, timeframe, strategy_id, direction=direction)
+            except Exception as rec_err:
+                logger.warning(f"[LOOP] record_position_timeframe 오류 (진입은 성공): {rec_err}")
 
             # 알림 기록 클리어 (재진입이므로 이전 청산 알림 초기화)
             notify_key = f"{pos_key}:{strategy_id}"
@@ -376,7 +391,7 @@ def _update_prev_snapshot(
 
 
 def main() -> None:
-    logger.info("🚀 SMRA Bot v6.3.3 시작 (Hedge Mode + One-way 호환)")
+    logger.info("🚀 SMRA Bot v6.3.4 시작 (Hedge Mode + One-way 호환)")
     logger.info(f"120개 전략 (BTC 40 + ETH 40 + XRP 40) | Hedge Mode | Score 순위 충돌 해소")
 
     # [v6.3.3] 헤지 모드 전환 시도 — 실패해도 봇 계속 동작

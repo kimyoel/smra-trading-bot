@@ -1,5 +1,10 @@
 """
-config.py — 전략 목록, 자본배분, MIN_NOTIONAL, 수수료 설정 (v6.3.2)
+config.py — 전략 목록, 자본배분, MIN_NOTIONAL, 수수료 설정 (v6.3.5)
+
+[v6.3.5] BTC 15m 전략 전면 교체 (BTCUSDT_15m_WFA_Report.docx 2026-03-22)
+  - ALL_STRATEGIES: 기존 BTC 15m 10개 → 신규 WFA 10개 교체
+  - 레버리지: 전 전략 20× 통일 (보고서 권장)
+  - Score 대폭 향상: 최고 26.75 (기존 20.36)
 
 [v6.3.2] 자본배분 방향별 15% 분할
   - CAPITAL_ALLOCATION: 심볼당 30% → 방향별 15% (LONG 15% + SHORT 15% = 30%/심볼)
@@ -53,17 +58,17 @@ ALL_STRATEGIES = [
     "S13_1h_MACD_STDDEV_VOL_INV",    # Score 22.18, 1h SHORT 3위
     "S14_1h_BB_MFI_ADX_INV",         # Score 22.11, 1h SHORT 4위
     "S15_1h_CCI_EMA_STACK",          # Score 20.80, 1h SHORT 5위
-    # === BTC 15m 전략 ===
-    "S1_WILLR_BB_OBV",               # Score 20.36, 15m SHORT 1위
-    "L1_WILLR_BB_EMA_STACK",         # Score 19.21, 15m LONG 1위
-    "S2_SMA_ICHIMOKU_STDDEV",        # Score 19.36, 15m SHORT 2위
-    "S3_OBV_KELTNER_ADX_INV",        # Score 18.98, 15m SHORT 3위
-    "L2_ADX_WILLR_EMA_STACK",        # Score 18.73, 15m LONG 2위
-    "S4_BB_EMA_STACK",               # Score 18.73, 15m SHORT 4위
-    "S5_BB_EMA_STACK_ATR_INV",       # Score 18.73, 15m SHORT 5위
-    "L3_AROON_DONCHIAN_VOL_INV",     # Score 15.97, 15m LONG 3위
-    "L4_EMA_MACD_PSAR",              # Score 15.64, 15m LONG 4위
-    "L5_EMA_PSAR_MOM",               # Score 15.53, 15m LONG 5위
+    # === BTC 15m 전략 (v6.3 — BTCUSDT_15m_WFA_Report.docx 2026-03-22) ===
+    "S1_OBV_CCI_MOM",                # Score 26.75, 15m SHORT 1위
+    "S2_OBV_CCI_ROC",                # Score 26.75, 15m SHORT 2위
+    "S3_ADX_KELTNER_AD",             # Score 25.18, 15m SHORT 3위
+    "L1_WILLR_BB_EMA_STACK",         # Score 24.92, 15m LONG 1위
+    "L2_SMA_PSAR_ADX_INV",           # Score 24.14, 15m LONG 2위
+    "S4_BB_EMA_STACK",               # Score 23.81, 15m SHORT 4위
+    "S5_BB_EMA_STACK_ATR_INV",       # Score 23.81, 15m SHORT 5위
+    "L3_PSAR_ICHIMOKU_ATR_SIG",      # Score 23.54, 15m LONG 3위
+    "L4_EMA_MACD_PSAR",              # Score 21.41, 15m LONG 4위
+    "L5_EMA_PSAR_AD",                # Score 20.75, 15m LONG 5위
     # === BTC 5m 전략 ===
     "L6_5m_BB_EMA_STACK_VOL_INV",    # Score 14.28, 5m LONG 1위
     "S6_5m_RSI_WILLR_EMA_STACK",     # Score 13.26, 5m SHORT 1위
