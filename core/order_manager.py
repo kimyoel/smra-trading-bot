@@ -1,7 +1,12 @@
 """
-core/order_manager.py — ccxt futures 주문 발행 (v3.1 — Hedge Mode 방향별 주문 관리)
+core/order_manager.py — ccxt futures 주문 발행 (v3.2 — 잔여 Algo Order 정리 추가)
 
 버그 수정 히스토리:
+  v3.2 :
+  [FIX9] execute_order() 진입 전 잔여 Algo Order 선제 정리
+         - 이전 포지션의 TP/SL이 취소되지 않고 남아있는 경우 대응
+         - cancel_all_open_orders(symbol, pos_side=direction) 호출
+         - 재진입 후 의도치 않은 부분 청산 방지
   v3.1 :
   [FIX7] cancel_all_open_orders() Hedge Mode 방향별 필터링 구현
          - pos_side 지정 시 해당 positionSide의 주문만 개별 취소
@@ -259,6 +264,21 @@ def execute_order(sig: dict) -> bool:
     amount         = 0.0
 
     try:
+        # 0. [v3.2] 진입 전 잔여 Algo Order 정리 (TP/SL 비-OCO 대응)
+        # 이전 포지션의 TP/SL이 취소되지 않고 남아있으면
+        # 재진입 후 의도치 않은 부분 청산 유발 → 선제적 정리
+        try:
+            cancel_all_open_orders(symbol, pos_side=direction)
+            logger.info(
+                f"[ORDER] {strategy_id} 진입 전 잔여 주문 정리 완료 "
+                f"({symbol} [{dir_label}])"
+            )
+        except Exception as _clean_err:
+            logger.warning(
+                f"[ORDER] {strategy_id} 진입 전 잔여 주문 정리 실패 "
+                f"(계속 진행): {_clean_err}"
+            )
+
         # 1. 레버리지 설정
         if not set_leverage(symbol, leverage):
             return False
